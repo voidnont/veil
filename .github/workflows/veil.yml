@@ -177,7 +177,7 @@ jobs:
           [Setup]
           AppId={{D9E74630-E1B8-4BE6-9D86-39BDA2817AC3}
           AppName=Veil Browser
-          AppVersion=0.8.4
+          AppVersion=0.8.5
           AppPublisher=Veil
           DefaultDirName={localappdata}\Programs\Veil Browser
           DefaultGroupName=Veil Browser
