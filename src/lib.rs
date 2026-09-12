@@ -1,4 +1,5 @@
 pub mod blocker;
+pub mod display_list;
 pub mod dom;
 pub mod engine;
 pub mod event_loop;

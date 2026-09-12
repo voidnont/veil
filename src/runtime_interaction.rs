@@ -5,7 +5,7 @@ use url::Url;
 
 use crate::engine::DocumentView;
 use crate::renderer_host::{RendererHost, RendererMode};
-use crate::renderer_protocol::{DomEventRequest, RuntimeDamage};
+use crate::renderer_protocol::{DisplayListPatch, DomEventRequest, RuntimeDamage};
 use crate::script::ScriptReport;
 use crate::storage::SharedBrowserStorage;
 
@@ -27,8 +27,15 @@ pub struct RuntimeInteractionRequest {
 
 pub struct RuntimePageUpdate {
     pub view: Option<DocumentView>,
+    pub patch: Option<DisplayListPatch>,
     pub script_report: ScriptReport,
     pub damage: RuntimeDamage,
+    pub title: String,
+    pub icon_url: Option<String>,
+    pub cosmetic_hidden: usize,
+    pub external_stylesheets: usize,
+    pub external_scripts: usize,
+    pub reused_blocks: usize,
 }
 
 pub struct RuntimeInteractionResult {
@@ -78,8 +85,15 @@ impl RuntimeInteractionLoader {
                         update.default_prevented,
                         Ok(RuntimePageUpdate {
                             view: update.view,
+                            patch: update.patch,
                             script_report: update.script_report,
                             damage: update.damage,
+                            title: update.title,
+                            icon_url: update.icon_url,
+                            cosmetic_hidden: update.cosmetic_hidden,
+                            external_stylesheets: update.external_stylesheets,
+                            external_scripts: update.external_scripts,
+                            reused_blocks: update.reused_blocks,
                         }),
                     )
                 }

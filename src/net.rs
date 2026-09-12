@@ -303,7 +303,7 @@ fn build_shared_http_client() -> Client {
     let mut headers = HeaderMap::new();
     headers.insert(
         USER_AGENT,
-        HeaderValue::from_static("Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.7 VeilEngine/0.8.7"),
+        HeaderValue::from_static("Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.8 VeilEngine/0.8.8"),
     );
     headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.7"));
     headers.insert(DNT, HeaderValue::from_static("1"));

@@ -2,10 +2,11 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 
 use veil_engine::blocker::Blocker;
+use veil_engine::display_list::{block_fingerprints, diff_fingerprints};
 use veil_engine::dom::Dom;
-use veil_engine::engine::{paint_fingerprint, DocumentView, InvalidationKind, RetainedDocument};
+use veil_engine::engine::{DocumentView, InvalidationKind, RetainedDocument};
 use veil_engine::renderer_protocol::{
-    RenderRequest, RendererCommand, RendererReply, RuntimeDamage, RuntimeUpdate,
+    DisplayListPatch, RenderRequest, RendererCommand, RendererReply, RuntimeDamage, RuntimeUpdate,
 };
 use veil_engine::script::{JavascriptSandbox, LiveJavascriptRuntime, ScriptReport};
 
@@ -18,7 +19,7 @@ struct LiveSession {
     retained: RetainedDocument,
     blocker: Blocker,
     last_view: DocumentView,
-    last_paint_fingerprint: u64,
+    last_paint_fingerprints: Vec<u64>,
 }
 
 fn main() {
@@ -133,14 +134,14 @@ fn create_session(request: RenderRequest) -> (LiveSession, Result<DocumentView, 
     );
     let mut view = retained.render(&blocker, &report);
     view.external_stylesheets = request.external_css.len();
-    let fingerprint = paint_fingerprint(&view);
+    let fingerprints = block_fingerprints(&view.blocks);
     let session = LiveSession {
         runtime,
         report,
         retained,
         blocker,
         last_view: view.clone(),
-        last_paint_fingerprint: fingerprint,
+        last_paint_fingerprints: fingerprints,
     };
     (session, Ok(view))
 }
@@ -163,14 +164,15 @@ fn update_session(session: &mut LiveSession, default_prevented: bool) -> Runtime
     candidate.external_scripts = session.last_view.external_scripts;
     candidate.web_fonts = session.last_view.web_fonts.clone();
 
-    let fingerprint = paint_fingerprint(&candidate);
-    let paint_changed = fingerprint != session.last_paint_fingerprint;
+    let fingerprints = block_fingerprints(&candidate.blocks);
+    let diff = diff_fingerprints(&session.last_paint_fingerprints, &fingerprints);
+    let paint_changed = !diff.is_empty();
     let metadata_changed = candidate.title != old_title || candidate.icon_url != old_icon;
     let actual_damage = if paint_changed {
-        if requested_damage == InvalidationKind::Layout {
-            RuntimeDamage::Layout
-        } else {
-            RuntimeDamage::Paint
+        match requested_damage {
+            InvalidationKind::Layout => RuntimeDamage::Layout,
+            InvalidationKind::LayoutSubtree => RuntimeDamage::LayoutSubtree,
+            _ => RuntimeDamage::Paint,
         }
     } else if metadata_changed {
         RuntimeDamage::Metadata
@@ -178,19 +180,40 @@ fn update_session(session: &mut LiveSession, default_prevented: bool) -> Runtime
         RuntimeDamage::None
     };
 
-    let view = if actual_damage == RuntimeDamage::None {
-        session.last_view.script_report = session.report.clone();
-        None
-    } else {
-        session.last_paint_fingerprint = fingerprint;
+    let mut full_view = None;
+    let mut patch = None;
+    if actual_damage != RuntimeDamage::None {
+        let inserted = diff.new_end.saturating_sub(diff.start);
+        let localized = actual_damage != RuntimeDamage::Layout
+            && diff.changed > 0
+            && diff.changed <= candidate.blocks.len().max(1).div_ceil(2)
+            && inserted <= 96;
+        if localized {
+            patch = Some(DisplayListPatch {
+                start: diff.start,
+                remove_count: diff.old_remove_count,
+                blocks: candidate.blocks[diff.start..diff.new_end].to_vec(),
+            });
+        } else if paint_changed {
+            full_view = Some(candidate.clone());
+        }
+        session.last_paint_fingerprints = fingerprints;
         session.last_view = candidate.clone();
-        Some(candidate)
-    };
+    } else {
+        session.last_view.script_report = session.report.clone();
+    }
 
     RuntimeUpdate {
-        view,
+        view: full_view,
+        patch,
         script_report: session.report.clone(),
         damage: actual_damage,
+        title: candidate.title,
+        icon_url: candidate.icon_url,
+        cosmetic_hidden: candidate.cosmetic_hidden,
+        external_stylesheets: candidate.external_stylesheets,
+        external_scripts: candidate.external_scripts,
+        reused_blocks: diff.reused,
         default_prevented,
     }
 }

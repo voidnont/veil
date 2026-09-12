@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::engine::DocumentView;
+use crate::engine::{DocumentView, RenderBlock};
 use crate::privacy::SitePrivacy;
 use crate::script::ScriptReport;
 use crate::storage::ScriptStorageSnapshot;
@@ -30,16 +30,32 @@ pub enum RuntimeDamage {
     None,
     Metadata,
     Paint,
+    LayoutSubtree,
     Layout,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisplayListPatch {
+    pub start: usize,
+    pub remove_count: usize,
+    pub blocks: Vec<RenderBlock>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeUpdate {
-    /// Present only when retained paint/layout output actually changed.
+    /// Used for full-layout changes or when a retained patch would be larger than the full view.
     pub view: Option<DocumentView>,
+    /// Used for localized retained display-list changes.
+    pub patch: Option<DisplayListPatch>,
     /// Always returned so timer/rAF/storage state can advance without repainting.
     pub script_report: ScriptReport,
     pub damage: RuntimeDamage,
+    pub title: String,
+    pub icon_url: Option<String>,
+    pub cosmetic_hidden: usize,
+    pub external_stylesheets: usize,
+    pub external_scripts: usize,
+    pub reused_blocks: usize,
     pub default_prevented: bool,
 }
 

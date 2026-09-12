@@ -10,7 +10,7 @@ use crate::blocker::Blocker;
 use crate::engine::{DocumentView, Engine};
 use crate::privacy::site_key_for_url;
 use crate::renderer_protocol::{
-    DomEventRequest, RenderRequest, RendererCommand, RendererReply, RuntimeDamage,
+    DisplayListPatch, DomEventRequest, RenderRequest, RendererCommand, RendererReply, RuntimeDamage,
 };
 use crate::script::ScriptReport;
 
@@ -36,8 +36,15 @@ impl RendererMode {
 
 pub struct RuntimeHostUpdate {
     pub view: Option<DocumentView>,
+    pub patch: Option<DisplayListPatch>,
     pub script_report: ScriptReport,
     pub damage: RuntimeDamage,
+    pub title: String,
+    pub icon_url: Option<String>,
+    pub cosmetic_hidden: usize,
+    pub external_stylesheets: usize,
+    pub external_scripts: usize,
+    pub reused_blocks: usize,
     pub mode: RendererMode,
     pub default_prevented: bool,
 }
@@ -103,8 +110,15 @@ impl RendererHost {
         match reply {
             RendererReply::Runtime(result) => result.map(|update| RuntimeHostUpdate {
                 view: update.view,
+                patch: update.patch,
                 script_report: update.script_report,
                 damage: update.damage,
+                title: update.title,
+                icon_url: update.icon_url,
+                cosmetic_hidden: update.cosmetic_hidden,
+                external_stylesheets: update.external_stylesheets,
+                external_scripts: update.external_scripts,
+                reused_blocks: update.reused_blocks,
                 mode,
                 default_prevented: update.default_prevented,
             }),
@@ -129,8 +143,15 @@ impl RendererHost {
         match reply {
             RendererReply::Runtime(result) => result.map(|update| RuntimeHostUpdate {
                 view: update.view,
+                patch: update.patch,
                 script_report: update.script_report,
                 damage: update.damage,
+                title: update.title,
+                icon_url: update.icon_url,
+                cosmetic_hidden: update.cosmetic_hidden,
+                external_stylesheets: update.external_stylesheets,
+                external_scripts: update.external_scripts,
+                reused_blocks: update.reused_blocks,
                 mode,
                 default_prevented: update.default_prevented,
             }),

@@ -234,6 +234,7 @@ pub enum InvalidationKind {
     None,
     Metadata,
     Paint,
+    LayoutSubtree,
     Layout,
 }
 
@@ -243,7 +244,7 @@ impl InvalidationKind {
     }
 
     pub fn needs_layout(self) -> bool {
-        self == Self::Layout
+        self >= Self::LayoutSubtree
     }
 }
 
@@ -311,10 +312,10 @@ impl RetainedDocument {
             invalidation = InvalidationKind::Layout;
         } else if report.dom_mutations.len() > self.applied_mutations {
             for mutation in &report.dom_mutations[self.applied_mutations..] {
+                invalidation = invalidation.max(mutation_invalidation(mutation));
                 apply_single_script_mutation(&mut self.live_dom, mutation);
             }
             self.applied_mutations = report.dom_mutations.len();
-            invalidation = InvalidationKind::Layout;
         }
 
         if report.body_html_override != self.last_body_html_override {
@@ -392,7 +393,7 @@ impl RetainedDocument {
             let fallback = build_compatibility_fallback(&self.live_dom, &base);
             if fallback.is_empty() {
                 blocks.push(RenderBlock::Notice(
-                    "This document has no visible content Veil Browser 0.8.7 can currently paint. It may depend on unsupported Web APIs, canvas/WebGL, iframes, or a newer layout feature.".into(),
+                    "This document has no visible content Veil Browser 0.8.8 can currently paint. It may depend on unsupported Web APIs, canvas/WebGL, iframes, or a newer layout feature.".into(),
                 ));
             } else {
                 blocks.push(RenderBlock::Notice(
@@ -696,6 +697,36 @@ fn apply_single_script_mutation(dom: &mut Dom, mutation: &DomMutation) {
         }
         "remove" => dom.remove_node(idx),
         _ => {}
+    }
+}
+
+fn mutation_invalidation(mutation: &DomMutation) -> InvalidationKind {
+    match mutation.kind.as_str() {
+        // These attributes do not participate in Veil's current layout/paint model.
+        "attr-set" => {
+            let name = mutation
+                .value
+                .split_once('\0')
+                .map(|(name, _)| name)
+                .unwrap_or("");
+            if name.starts_with("data-") || name.starts_with("aria-") || name == "title" {
+                InvalidationKind::None
+            } else {
+                InvalidationKind::LayoutSubtree
+            }
+        }
+        "attr-remove" => {
+            let name = mutation.value.as_str();
+            if name.starts_with("data-") || name.starts_with("aria-") || name == "title" {
+                InvalidationKind::None
+            } else {
+                InvalidationKind::LayoutSubtree
+            }
+        }
+        "text" | "style-set" | "html" | "append-html" | "prepend-html" | "remove" => {
+            InvalidationKind::LayoutSubtree
+        }
+        _ => InvalidationKind::LayoutSubtree,
     }
 }
 
@@ -1975,7 +2006,7 @@ mod retained_render_tests {
         });
         assert_eq!(
             retained.update_from_report(&report),
-            InvalidationKind::Layout
+            InvalidationKind::LayoutSubtree
         );
         let view = retained.render(&Blocker::default(), &report);
         assert!(format!("{:?}", view.blocks).contains("Updated"));

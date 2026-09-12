@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align2, Color32, FontId, RichText, ScrollArea, Sense, TextureHandle};
 use url::Url;
+use veil_engine::display_list::{
+    estimate_block_height, RetainedDisplayList, VIRTUALIZE_MIN_ITEMS, VIRTUALIZE_OVERSCAN,
+};
 use veil_engine::engine::{
     DocumentView, FormControl, FormControlKind, RenderBlock, TextRun, WebFontResource,
 };
@@ -248,6 +251,7 @@ struct VeilApp {
     image_load_queue: VecDeque<ImageLoadRequest>,
     image_loads_inflight: usize,
     media_cache: HashMap<String, CachedMedia>,
+    display_lists: HashMap<u64, RetainedDisplayList>,
     web_font_registry: HashMap<String, Vec<u8>>,
     custom_filters: String,
     form_values: HashMap<(u64, u64, usize), String>,
@@ -290,6 +294,7 @@ impl VeilApp {
             image_load_queue: VecDeque::new(),
             image_loads_inflight: 0,
             media_cache: HashMap::new(),
+            display_lists: HashMap::new(),
             web_font_registry: HashMap::new(),
             custom_filters,
             form_values: HashMap::new(),
@@ -371,6 +376,7 @@ impl VeilApp {
         self.form_values.retain(|(tab, _, _), _| *tab != closed_id);
         self.form_checks.retain(|(tab, _, _), _| *tab != closed_id);
         self.home_queries.remove(&closed_id);
+        self.display_lists.remove(&closed_id);
         if self.split_tab_id == Some(closed_id) {
             self.split_tab_id = None;
         }
@@ -466,6 +472,7 @@ impl VeilApp {
             tab.address = HOME.into();
             tab.page = DocumentView::home();
             tab.status = "Private new tab".into();
+            self.display_lists.remove(&tab.id);
             return;
         }
 
@@ -525,14 +532,22 @@ impl VeilApp {
             match result.result {
                 Ok(view) => {
                     install_web_fonts(ctx, &view.web_fonts, &mut self.web_font_registry);
+                    let tab_id = tab.id;
+                    let diff = self
+                        .display_lists
+                        .entry(tab_id)
+                        .or_default()
+                        .reconcile(&view.blocks, 1100.0);
                     tab.address = view.url.clone();
                     tab.status = format!(
-                        "{} ms · {} blocked · {} CSS · {} scripts · {} · retained paint",
+                        "{} ms · {} blocked · {} CSS · {} scripts · {} · {} retained / {} changed",
                         result.elapsed_ms,
                         result.blocked_count,
                         view.external_stylesheets,
                         view.external_scripts,
                         result.renderer_mode.label(),
+                        diff.reused,
+                        diff.changed,
                     );
                     tab.page = view;
                 }
@@ -599,21 +614,55 @@ impl VeilApp {
             match result.result {
                 Ok(update) => {
                     let damage = update.damage;
+                    let retained_count = update.reused_blocks;
                     if let Some(mut view) = update.view {
                         // Fonts are loaded by the navigation broker, not the engine process.
-                        // Preserve them while applying retained layout/paint damage.
+                        // Preserve them while applying a full retained-layout replacement.
                         view.web_fonts = self.tabs[index].page.web_fonts.clone();
                         install_web_fonts(ctx, &view.web_fonts, &mut self.web_font_registry);
                         self.tabs[index].page = view;
+                    } else if let Some(patch) = update.patch {
+                        let page = &mut self.tabs[index].page;
+                        let start = patch.start.min(page.blocks.len());
+                        let end = start
+                            .saturating_add(patch.remove_count)
+                            .min(page.blocks.len());
+                        page.blocks.splice(start..end, patch.blocks);
+                        page.title = update.title;
+                        page.icon_url = update.icon_url;
+                        page.cosmetic_hidden = update.cosmetic_hidden;
+                        page.external_stylesheets = update.external_stylesheets;
+                        page.external_scripts = update.external_scripts;
+                        page.script_report = update.script_report;
                     } else {
-                        // RefreshDriver-style no-op tick: advance timers/rAF state without
-                        // replacing or repainting the retained page.
-                        self.tabs[index].page.script_report = update.script_report;
+                        // RefreshDriver-style no-op or metadata-only tick: advance runtime state
+                        // without replacing the retained display list.
+                        let page = &mut self.tabs[index].page;
+                        page.title = update.title;
+                        page.icon_url = update.icon_url;
+                        page.cosmetic_hidden = update.cosmetic_hidden;
+                        page.external_stylesheets = update.external_stylesheets;
+                        page.external_scripts = update.external_scripts;
+                        page.script_report = update.script_report;
                     }
                     if damage != RuntimeDamage::None {
+                        let tab_id = self.tabs[index].id;
+                        let diff = self
+                            .display_lists
+                            .entry(tab_id)
+                            .or_default()
+                            .reconcile(&self.tabs[index].page.blocks, 1100.0);
                         self.tabs[index].status = result
                             .mode
-                            .map(|mode| format!("Live {:?} update · {}", damage, mode.label()))
+                            .map(|mode| {
+                                format!(
+                                    "Live {:?} · {} retained · {} changed · {}",
+                                    damage,
+                                    retained_count.max(diff.reused),
+                                    diff.changed,
+                                    mode.label()
+                                )
+                            })
                             .unwrap_or_else(|| format!("Live {:?} update", damage));
                         ctx.request_repaint();
                     }
@@ -1540,8 +1589,28 @@ impl VeilApp {
             ui.separator();
         }
 
+        let tab_id = self.tabs[tab_index].id;
+        let page_width = ui.available_width().max(280.0).min(1260.0);
+        self.display_lists
+            .entry(tab_id)
+            .or_default()
+            .reconcile(&page.blocks, page_width);
+        let heights: Vec<f32> = page
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| {
+                self.display_lists
+                    .get(&tab_id)
+                    .map(|list| list.height_for(index, block, page_width))
+                    .unwrap_or_else(|| estimate_block_height(block, page_width))
+            })
+            .collect();
+        let virtualize = page.blocks.len() >= VIRTUALIZE_MIN_ITEMS;
+        let mut observed_heights = Vec::new();
+
         ScrollArea::vertical()
-            .id_salt(("page", self.tabs[tab_index].id))
+            .id_salt(("page", tab_id))
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.add_space(if split { 8.0 } else { 4.0 });
@@ -1549,7 +1618,25 @@ impl VeilApp {
                     ui.add_space(if split { 8.0 } else { 6.0 });
                     ui.vertical(|ui| {
                         ui.set_max_width((ui.available_width() - 20.0).max(280.0).min(1260.0));
-                        for block in &page.blocks {
+                        let expanded_clip = ui.clip_rect().expand(VIRTUALIZE_OVERSCAN);
+                        for (block_index, block) in page.blocks.iter().enumerate() {
+                            let estimated =
+                                heights.get(block_index).copied().unwrap_or_else(|| {
+                                    estimate_block_height(block, ui.available_width())
+                                });
+                            let predicted = egui::Rect::from_min_size(
+                                egui::pos2(ui.min_rect().left(), ui.next_widget_position().y),
+                                egui::vec2(ui.available_width().max(1.0), estimated.max(1.0)),
+                            );
+                            if virtualize && !expanded_clip.intersects(predicted) {
+                                ui.allocate_space(egui::vec2(
+                                    ui.available_width().max(1.0),
+                                    estimated.max(1.0),
+                                ));
+                                continue;
+                            }
+
+                            let before = ui.next_widget_position().y;
                             self.render_block(
                                 ctx,
                                 ui,
@@ -1559,11 +1646,19 @@ impl VeilApp {
                                 privacy,
                                 &mut navigation,
                             );
+                            let measured = (ui.next_widget_position().y - before).abs().max(1.0);
+                            observed_heights.push((block_index, measured));
                         }
                         ui.add_space(56.0);
                     });
                 });
             });
+
+        if let Some(list) = self.display_lists.get_mut(&tab_id) {
+            for (index, height) in observed_heights {
+                list.observe_height(index, height);
+            }
+        }
 
         if let Some(target) = navigation {
             self.navigate_tab_with_method(tab_index, target.url, true, target.method);
@@ -1596,23 +1691,17 @@ impl VeilApp {
             RenderBlock::Container { children, style } => {
                 with_box(ui, style, |ui| match style.layout {
                     LayoutMode::Block => {
-                        for child in children {
-                            self.render_block(
-                                ctx, ui, tab_index, child, base_url, privacy, navigation,
-                            );
-                        }
+                        let ordered: Vec<&RenderBlock> = children.iter().collect();
+                        self.render_vertical_children_virtualized(
+                            ctx, ui, tab_index, &ordered, 0.0, base_url, privacy, navigation,
+                        );
                     }
                     LayoutMode::FlexColumn => {
                         let mut ordered: Vec<&RenderBlock> = children.iter().collect();
                         ordered.sort_by_key(|child| block_order(child));
-                        for (index, child) in ordered.iter().enumerate() {
-                            self.render_block(
-                                ctx, ui, tab_index, child, base_url, privacy, navigation,
-                            );
-                            if index + 1 < ordered.len() {
-                                ui.add_space(style.gap);
-                            }
-                        }
+                        self.render_vertical_children_virtualized(
+                            ctx, ui, tab_index, &ordered, style.gap, base_url, privacy, navigation,
+                        );
                     }
                     LayoutMode::FlexRow => {
                         let mut ordered: Vec<&RenderBlock> = children.iter().collect();
@@ -1791,6 +1880,36 @@ impl VeilApp {
                     ui.label(RichText::new(text).strong());
                 });
                 ui.add_space(10.0);
+            }
+        }
+    }
+
+    fn render_vertical_children_virtualized(
+        &mut self,
+        ctx: &egui::Context,
+        ui: &mut egui::Ui,
+        tab_index: usize,
+        children: &[&RenderBlock],
+        gap: f32,
+        base_url: Option<&Url>,
+        privacy: SitePrivacy,
+        navigation: &mut Option<PendingNavigation>,
+    ) {
+        let virtualize = children.len() >= VIRTUALIZE_MIN_ITEMS;
+        let expanded_clip = ui.clip_rect().expand(VIRTUALIZE_OVERSCAN);
+        for (index, child) in children.iter().enumerate() {
+            let estimated = estimate_block_height(child, ui.available_width()).max(1.0);
+            let predicted = egui::Rect::from_min_size(
+                egui::pos2(ui.min_rect().left(), ui.next_widget_position().y),
+                egui::vec2(ui.available_width().max(1.0), estimated),
+            );
+            if virtualize && !expanded_clip.intersects(predicted) {
+                ui.allocate_space(egui::vec2(ui.available_width().max(1.0), estimated));
+            } else {
+                self.render_block(ctx, ui, tab_index, child, base_url, privacy, navigation);
+            }
+            if index + 1 < children.len() && gap > 0.0 {
+                ui.add_space(gap);
             }
         }
     }
