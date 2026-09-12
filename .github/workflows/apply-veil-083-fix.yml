@@ -40,6 +40,30 @@ jobs:
       - name: Apply Veil 0.8.3 patch
         run: python3 tools/veil_083_patch.py
 
+      - name: Normalize generated YouTube helper
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/loader.rs')
+          lines = path.read_text().splitlines()
+          fixed = []
+          removed_marker = False
+          removed_apostrophe = False
+          for line in lines:
+              if 'ytInitialData' in line and 'window[' in line:
+                  removed_marker = True
+                  continue
+              if '&#39;' in line and '.replace' in line:
+                  removed_apostrophe = True
+                  continue
+              fixed.append(line)
+          if not removed_marker:
+              raise SystemExit('generated ytInitialData window marker line not found')
+          if not removed_apostrophe:
+              raise SystemExit('generated apostrophe escape line not found')
+          path.write_text('\n'.join(fixed) + '\n')
+          PY
+
       - name: Format
         run: cargo fmt --all
 
