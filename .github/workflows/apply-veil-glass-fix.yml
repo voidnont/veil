@@ -23,6 +23,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
 
+      - name: Fix patch matcher
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/veil_glass_patch.py')
+          source = path.read_text()
+          old = 'shell = replace_once(shell, "    let sidebar = sidebar_width(app, ctx);", "    let sidebar = COLLAPSED_DOCK_WIDTH;", "stable content inset")'
+          new = '''shell = replace_once(
+              shell,
+              "pub(crate) fn render_content(app: &mut VeilApp, ctx: &egui::Context) {\\n    let sidebar = sidebar_width(app, ctx);",
+              "pub(crate) fn render_content(app: &mut VeilApp, ctx: &egui::Context) {\\n    let sidebar = COLLAPSED_DOCK_WIDTH;",
+              "stable content inset",
+          )'''
+          if source.count(old) != 1:
+              raise SystemExit(f'patch matcher anchor count: {source.count(old)}')
+          path.write_text(source.replace(old, new, 1))
+          PY
+
       - name: Apply source patch
         run: python3 tools/veil_glass_patch.py
 
