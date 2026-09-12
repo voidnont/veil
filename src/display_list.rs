@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
-use std::hash::{Hash, Hasher};
+use std::hash::Hasher;
+use std::io::{self, Write};
 
 use crate::engine::{RenderBlock, TextRun};
 use crate::style::{ComputedStyle, LayoutMode};
@@ -95,8 +96,11 @@ impl RetainedDisplayList {
             return;
         };
         let height = height.clamp(1.0, 12_000.0);
+        if item.measured && (item.height - height).abs() < 0.5 {
+            return;
+        }
         item.height = if item.measured {
-            // Smooth tiny font/layout jitter so the virtual scroll geometry stays stable.
+            // Smooth meaningful geometry changes while ignoring sub-pixel frame jitter.
             item.height * 0.75 + height * 0.25
         } else {
             height
@@ -105,11 +109,22 @@ impl RetainedDisplayList {
     }
 }
 
+struct HashWriter<'a, H: Hasher>(&'a mut H);
+
+impl<H: Hasher> Write for HashWriter<'_, H> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.write(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 pub fn block_fingerprint(block: &RenderBlock) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    if let Ok(bytes) = serde_json::to_vec(block) {
-        bytes.hash(&mut hasher);
-    }
+    let _ = serde_json::to_writer(HashWriter(&mut hasher), block);
     hasher.finish()
 }
 

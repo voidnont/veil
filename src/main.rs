@@ -1591,22 +1591,26 @@ impl VeilApp {
 
         let tab_id = self.tabs[tab_index].id;
         let page_width = ui.available_width().max(280.0).min(1260.0);
-        self.display_lists
-            .entry(tab_id)
-            .or_default()
-            .reconcile(&page.blocks, page_width);
-        let heights: Vec<f32> = page
-            .blocks
-            .iter()
-            .enumerate()
-            .map(|(index, block)| {
-                self.display_lists
-                    .get(&tab_id)
-                    .map(|list| list.height_for(index, block, page_width))
-                    .unwrap_or_else(|| estimate_block_height(block, page_width))
-            })
-            .collect();
+        if !self.display_lists.contains_key(&tab_id) {
+            let mut display_list = RetainedDisplayList::default();
+            display_list.reconcile(&page.blocks, page_width);
+            self.display_lists.insert(tab_id, display_list);
+        }
         let virtualize = page.blocks.len() >= VIRTUALIZE_MIN_ITEMS;
+        let heights: Vec<f32> = if virtualize {
+            page.blocks
+                .iter()
+                .enumerate()
+                .map(|(index, block)| {
+                    self.display_lists
+                        .get(&tab_id)
+                        .map(|list| list.height_for(index, block, page_width))
+                        .unwrap_or_else(|| estimate_block_height(block, page_width))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let mut observed_heights = Vec::new();
 
         ScrollArea::vertical()
@@ -1620,10 +1624,13 @@ impl VeilApp {
                         ui.set_max_width((ui.available_width() - 20.0).max(280.0).min(1260.0));
                         let expanded_clip = ui.clip_rect().expand(VIRTUALIZE_OVERSCAN);
                         for (block_index, block) in page.blocks.iter().enumerate() {
-                            let estimated =
+                            let estimated = if virtualize {
                                 heights.get(block_index).copied().unwrap_or_else(|| {
                                     estimate_block_height(block, ui.available_width())
-                                });
+                                })
+                            } else {
+                                1.0
+                            };
                             let predicted = egui::Rect::from_min_size(
                                 egui::pos2(ui.min_rect().left(), ui.next_widget_position().y),
                                 egui::vec2(ui.available_width().max(1.0), estimated.max(1.0)),

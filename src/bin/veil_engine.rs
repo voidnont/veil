@@ -148,6 +148,45 @@ fn create_session(request: RenderRequest) -> (LiveSession, Result<DocumentView, 
 
 fn update_session(session: &mut LiveSession, default_prevented: bool) -> RuntimeUpdate {
     let requested_damage = session.retained.update_from_report(&session.report);
+
+    if requested_damage == InvalidationKind::None {
+        session.last_view.script_report = session.report.clone();
+        return RuntimeUpdate {
+            view: None,
+            patch: None,
+            script_report: session.report.clone(),
+            damage: RuntimeDamage::None,
+            title: session.last_view.title.clone(),
+            icon_url: session.last_view.icon_url.clone(),
+            cosmetic_hidden: session.last_view.cosmetic_hidden,
+            external_stylesheets: session.last_view.external_stylesheets,
+            external_scripts: session.last_view.external_scripts,
+            reused_blocks: session.last_view.blocks.len(),
+            default_prevented,
+        };
+    }
+
+    if requested_damage == InvalidationKind::Metadata {
+        session.retained.update_cached_view(
+            &mut session.last_view,
+            &session.report,
+            InvalidationKind::Metadata,
+        );
+        return RuntimeUpdate {
+            view: None,
+            patch: None,
+            script_report: session.report.clone(),
+            damage: RuntimeDamage::Metadata,
+            title: session.last_view.title.clone(),
+            icon_url: session.last_view.icon_url.clone(),
+            cosmetic_hidden: session.last_view.cosmetic_hidden,
+            external_stylesheets: session.last_view.external_stylesheets,
+            external_scripts: session.last_view.external_scripts,
+            reused_blocks: session.last_view.blocks.len(),
+            default_prevented,
+        };
+    }
+
     let old_title = session.last_view.title.clone();
     let old_icon = session.last_view.icon_url.clone();
 
