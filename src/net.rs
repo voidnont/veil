@@ -22,6 +22,7 @@ const MAX_SCRIPT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_FONT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_MEDIA_BYTES: usize = 64 * 1024 * 1024;
 const MAX_UPLOAD_BYTES: usize = 32 * 1024 * 1024;
+const IMAGE_ACCEPT: &str = "image/webp,image/png,image/jpeg,image/gif,image/x-icon,*/*;q=0.1";
 
 pub struct PageResponse {
     pub final_url: Url,
@@ -77,7 +78,7 @@ impl PrivacyNetwork {
         headers.insert(
             USER_AGENT,
             HeaderValue::from_static(
-                "Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.3 VeilEngine/0.8.3",
+                "Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.4 VeilEngine/0.8.4",
             ),
         );
         headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.7"));
@@ -375,7 +376,7 @@ impl PrivacyNetwork {
             url,
             privacy,
             ResourceType::Image,
-            "image/avif,image/webp,image/png,image/jpeg,image/gif,image/x-icon,*/*;q=0.2",
+            IMAGE_ACCEPT,
             MAX_IMAGE_BYTES,
         )?;
         if !response.content_type.is_empty() && !response.content_type.starts_with("image/") {
@@ -546,6 +547,14 @@ fn read_limited(response: Response, limit: usize) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_accept_only_advertises_compiled_decoders() {
+        assert!(!IMAGE_ACCEPT.contains("avif"));
+        assert!(IMAGE_ACCEPT.contains("image/webp"));
+        assert!(IMAGE_ACCEPT.contains("image/png"));
+        assert!(IMAGE_ACCEPT.contains("image/jpeg"));
+    }
 
     #[test]
     fn multipart_encoder_emits_file_and_text_parts() {
