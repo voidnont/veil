@@ -1,0 +1,46 @@
+name: Apply Veil 0.8.2 Fix
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+
+      - name: Apply Veil 0.8.2 patch
+        run: python3 tools/veil_082_patch.py
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Test
+        env:
+          CARGO_TARGET_DIR: /tmp/veil-target
+        run: cargo test --all-targets
+
+      - name: Commit tested source
+        run: |
+          rm -f tools/veil_082_patch.py
+          rm -f .github/workflows/apply-veil-082-fix.yml
+          git add -A
+          git config user.name "veil-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "Fix YouTube stability and adaptive glass rails"
+          git push origin HEAD:main
