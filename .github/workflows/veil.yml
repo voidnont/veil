@@ -117,10 +117,14 @@ jobs:
 
       - name: Test updated source
         if: steps.detect.outputs.pending == 'true'
+        env:
+          CARGO_TARGET_DIR: /tmp/veil-target
         run: cargo test --all-targets
 
       - name: Build updated source
         if: steps.detect.outputs.pending == 'true'
+        env:
+          CARGO_TARGET_DIR: /tmp/veil-target
         run: cargo build --release --bins
 
       - name: Promote tested source to main
@@ -129,7 +133,8 @@ jobs:
         run: |
           rm -f tools/veil-shell-main.patch
           rm -rf tools/update-parts tools/source-update
-          git add -A
+          git add src/main.rs src/shell_ui.rs
+          git add -A -- tools/veil-shell-main.patch tools/update-parts tools/source-update
           git config user.name "veil-ci"
           git config user.email "actions@users.noreply.github.com"
           git commit -m "Veil Browser shell UI refresh"
