@@ -16,7 +16,7 @@ use veil_engine::loader::{LoadRequest, NavigationMethod, PageLoader};
 use veil_engine::media_loader::{MediaLoadRequest, MediaLoader, MediaProbe};
 use veil_engine::net::{MultipartPart, PrivacyNetwork};
 use veil_engine::privacy::{strip_tracking_parameters, PrivacyProfiles, SitePrivacy};
-use veil_engine::renderer_protocol::DomEventRequest;
+use veil_engine::renderer_protocol::{DomEventRequest, RuntimeDamage};
 use veil_engine::runtime_interaction::{
     RuntimeInteractionKind, RuntimeInteractionLoader, RuntimeInteractionRequest,
 };
@@ -527,7 +527,7 @@ impl VeilApp {
                     install_web_fonts(ctx, &view.web_fonts, &mut self.web_font_registry);
                     tab.address = view.url.clone();
                     tab.status = format!(
-                        "{} ms · {} blocked · {} CSS · {} scripts · {}",
+                        "{} ms · {} blocked · {} CSS · {} scripts · {} · retained paint",
                         result.elapsed_ms,
                         result.blocked_count,
                         view.external_stylesheets,
@@ -597,17 +597,26 @@ impl VeilApp {
                 continue;
             }
             match result.result {
-                Ok(mut view) => {
-                    // Fonts are loaded by the navigation broker, not the engine process.
-                    // Preserve them while replacing the live DOM/paint snapshot.
-                    view.web_fonts = self.tabs[index].page.web_fonts.clone();
-                    install_web_fonts(ctx, &view.web_fonts, &mut self.web_font_registry);
-                    self.tabs[index].page = view;
-                    self.tabs[index].status = result
-                        .mode
-                        .map(|mode| format!("Live page updated · {}", mode.label()))
-                        .unwrap_or_else(|| "Live page updated".into());
-                    ctx.request_repaint();
+                Ok(update) => {
+                    let damage = update.damage;
+                    if let Some(mut view) = update.view {
+                        // Fonts are loaded by the navigation broker, not the engine process.
+                        // Preserve them while applying retained layout/paint damage.
+                        view.web_fonts = self.tabs[index].page.web_fonts.clone();
+                        install_web_fonts(ctx, &view.web_fonts, &mut self.web_font_registry);
+                        self.tabs[index].page = view;
+                    } else {
+                        // RefreshDriver-style no-op tick: advance timers/rAF state without
+                        // replacing or repainting the retained page.
+                        self.tabs[index].page.script_report = update.script_report;
+                    }
+                    if damage != RuntimeDamage::None {
+                        self.tabs[index].status = result
+                            .mode
+                            .map(|mode| format!("Live {:?} update · {}", damage, mode.label()))
+                            .unwrap_or_else(|| format!("Live {:?} update", damage));
+                        ctx.request_repaint();
+                    }
                 }
                 Err(error) => {
                     // Interaction failures should not destroy a successfully loaded page.

@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -6,7 +7,7 @@ use url::Url;
 use crate::blocker::Blocker;
 use crate::dom::{Dom, NodeKind};
 use crate::privacy::SitePrivacy;
-use crate::script::{CanvasCommand, JavascriptSandbox, ScriptReport};
+use crate::script::{CanvasCommand, DomMutation, JavascriptSandbox, ScriptReport};
 use crate::storage::ScriptStorageSnapshot;
 use crate::style::{ComputedStyle, FontKind, StyleSheet};
 
@@ -228,6 +229,230 @@ impl DocumentView {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InvalidationKind {
+    None,
+    Metadata,
+    Paint,
+    Layout,
+}
+
+impl InvalidationKind {
+    pub fn needs_repaint(self) -> bool {
+        self != Self::None
+    }
+
+    pub fn needs_layout(self) -> bool {
+        self == Self::Layout
+    }
+}
+
+/// Retained DOM/style state for one live page session. Gecko keeps style/layout
+/// state alive and invalidates it from mutations instead of reparsing the whole
+/// document on every refresh tick. Veil follows that model at a smaller scale:
+/// the parsed DOM and stylesheet survive for the navigation lifetime, and only
+/// newly reported JS mutations are applied between paints.
+pub struct RetainedDocument {
+    url: String,
+    original_dom: Dom,
+    live_dom: Dom,
+    sheet: StyleSheet,
+    page_url: Option<Url>,
+    privacy: SitePrivacy,
+    external_script_count: usize,
+    icon_url: Option<String>,
+    applied_mutations: usize,
+    applied_canvas_commands: usize,
+    last_body_html_override: Option<String>,
+    last_title_override: Option<String>,
+}
+
+impl RetainedDocument {
+    pub fn new(
+        url: &str,
+        html: &str,
+        privacy: SitePrivacy,
+        external_css: &[String],
+        external_script_count: usize,
+        report: &ScriptReport,
+    ) -> Self {
+        let original_dom = Dom::parse(html);
+        let page_url = Url::parse(url).ok();
+        let icon_url = find_icon_url(&original_dom, page_url.as_ref());
+        let mut sheet = StyleSheet::from_dom(&original_dom);
+        for css in external_css {
+            sheet.parse_and_append(css);
+        }
+        let mut live_dom = original_dom.clone();
+        apply_script_mutations(&mut live_dom, report);
+        Self {
+            url: url.to_owned(),
+            original_dom,
+            live_dom,
+            sheet,
+            page_url,
+            privacy,
+            external_script_count,
+            icon_url,
+            applied_mutations: report.dom_mutations.len(),
+            applied_canvas_commands: report.canvas_commands.len(),
+            last_body_html_override: report.body_html_override.clone(),
+            last_title_override: report.title_override.clone(),
+        }
+    }
+
+    pub fn update_from_report(&mut self, report: &ScriptReport) -> InvalidationKind {
+        let mut invalidation = InvalidationKind::None;
+
+        if report.dom_mutations.len() < self.applied_mutations {
+            self.live_dom = self.original_dom.clone();
+            apply_script_mutations(&mut self.live_dom, report);
+            self.applied_mutations = report.dom_mutations.len();
+            invalidation = InvalidationKind::Layout;
+        } else if report.dom_mutations.len() > self.applied_mutations {
+            for mutation in &report.dom_mutations[self.applied_mutations..] {
+                apply_single_script_mutation(&mut self.live_dom, mutation);
+            }
+            self.applied_mutations = report.dom_mutations.len();
+            invalidation = InvalidationKind::Layout;
+        }
+
+        if report.body_html_override != self.last_body_html_override {
+            if let Some(body) = report
+                .body_html_override
+                .as_ref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                if let Some(idx) = self.live_dom.find_first_tag("body") {
+                    self.live_dom.replace_inner_html(idx, body);
+                }
+            } else {
+                self.live_dom = self.original_dom.clone();
+                apply_script_mutations(&mut self.live_dom, report);
+                self.applied_mutations = report.dom_mutations.len();
+            }
+            self.last_body_html_override = report.body_html_override.clone();
+            invalidation = invalidation.max(InvalidationKind::Layout);
+        }
+
+        if report.canvas_commands.len() != self.applied_canvas_commands {
+            self.applied_canvas_commands = report.canvas_commands.len();
+            invalidation = invalidation.max(InvalidationKind::Paint);
+        }
+
+        if report.title_override != self.last_title_override {
+            self.last_title_override = report.title_override.clone();
+            invalidation = invalidation.max(InvalidationKind::Metadata);
+        }
+
+        invalidation
+    }
+
+    pub fn render(&self, blocker: &Blocker, report: &ScriptReport) -> DocumentView {
+        let title = report
+            .title_override
+            .clone()
+            .or_else(|| find_title(&self.original_dom))
+            .unwrap_or_else(|| self.url.clone());
+        let mut cosmetic_hidden = 0usize;
+        let base = ComputedStyle::default();
+        let mut blocks = build_children(
+            &self.live_dom,
+            self.live_dom.root,
+            &base,
+            &self.sheet,
+            blocker,
+            self.page_url.as_ref(),
+            self.privacy.shields,
+            false,
+            &mut cosmetic_hidden,
+        );
+        attach_canvas_commands(&mut blocks, &report.canvas_commands);
+
+        if blocks.is_empty() {
+            let mut recovery_hidden = 0usize;
+            let mut recovered = build_children(
+                &self.live_dom,
+                self.live_dom.root,
+                &base,
+                &self.sheet,
+                blocker,
+                self.page_url.as_ref(),
+                false,
+                true,
+                &mut recovery_hidden,
+            );
+            attach_canvas_commands(&mut recovered, &report.canvas_commands);
+            if !recovered.is_empty() {
+                blocks = recovered;
+            }
+        }
+
+        if blocks.is_empty() {
+            let fallback = build_compatibility_fallback(&self.live_dom, &base);
+            if fallback.is_empty() {
+                blocks.push(RenderBlock::Notice(
+                    "This document has no visible content Veil Browser 0.8.7 can currently paint. It may depend on unsupported Web APIs, canvas/WebGL, iframes, or a newer layout feature.".into(),
+                ));
+            } else {
+                blocks.push(RenderBlock::Notice(
+                    "Compatibility view: Veil Engine simplified this page because its normal layout produced no paintable blocks.".into(),
+                ));
+                blocks.extend(fallback);
+            }
+        }
+
+        DocumentView {
+            url: self.url.clone(),
+            title,
+            icon_url: self.icon_url.clone(),
+            blocks,
+            cosmetic_hidden,
+            script_report: report.clone(),
+            external_stylesheets: 0,
+            external_scripts: self.external_script_count,
+            web_fonts: Vec::new(),
+        }
+    }
+
+    pub fn update_cached_view(
+        &self,
+        view: &mut DocumentView,
+        report: &ScriptReport,
+        invalidation: InvalidationKind,
+    ) {
+        view.title = report
+            .title_override
+            .clone()
+            .or_else(|| find_title(&self.original_dom))
+            .unwrap_or_else(|| self.url.clone());
+        view.icon_url = self.icon_url.clone();
+        view.script_report = report.clone();
+        if invalidation >= InvalidationKind::Paint {
+            clear_canvas_commands(&mut view.blocks);
+            attach_canvas_commands(&mut view.blocks, &report.canvas_commands);
+        }
+    }
+}
+
+pub fn paint_fingerprint(view: &DocumentView) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    if let Ok(bytes) = serde_json::to_vec(&view.blocks) {
+        bytes.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn clear_canvas_commands(blocks: &mut [RenderBlock]) {
+    for block in blocks {
+        match block {
+            RenderBlock::Canvas { commands, .. } => commands.clear(),
+            RenderBlock::Container { children, .. } => clear_canvas_commands(children),
+            _ => {}
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Engine {
     sandbox: JavascriptSandbox,
@@ -440,39 +665,43 @@ fn find_icon_url(dom: &Dom, base: Option<&Url>) -> Option<String> {
     }
 }
 
+fn apply_single_script_mutation(dom: &mut Dom, mutation: &DomMutation) {
+    let target = if mutation.target_id == "__body__" {
+        dom.find_first_tag("body")
+    } else if let Some(raw) = mutation.target_id.strip_prefix("@node:n") {
+        raw.parse::<usize>()
+            .ok()
+            .filter(|idx| *idx < dom.nodes.len())
+    } else {
+        dom.find_element_by_id(&mutation.target_id)
+    };
+    let Some(idx) = target else {
+        return;
+    };
+    match mutation.kind.as_str() {
+        "text" => dom.replace_text_content(idx, &mutation.value),
+        "html" => dom.replace_inner_html(idx, &mutation.value),
+        "append-html" => dom.append_inner_html(idx, &mutation.value, false),
+        "prepend-html" => dom.append_inner_html(idx, &mutation.value, true),
+        "attr-set" => {
+            if let Some((name, value)) = mutation.value.split_once(' ') {
+                dom.set_attribute(idx, name, value);
+            }
+        }
+        "attr-remove" => dom.remove_attribute(idx, &mutation.value),
+        "style-set" => {
+            if let Some((name, value)) = mutation.value.split_once(':') {
+                dom.set_style_property(idx, name, value);
+            }
+        }
+        "remove" => dom.remove_node(idx),
+        _ => {}
+    }
+}
+
 fn apply_script_mutations(dom: &mut Dom, report: &ScriptReport) {
     for mutation in &report.dom_mutations {
-        let target = if mutation.target_id == "__body__" {
-            dom.find_first_tag("body")
-        } else if let Some(raw) = mutation.target_id.strip_prefix("@node:n") {
-            raw.parse::<usize>()
-                .ok()
-                .filter(|idx| *idx < dom.nodes.len())
-        } else {
-            dom.find_element_by_id(&mutation.target_id)
-        };
-        let Some(idx) = target else {
-            continue;
-        };
-        match mutation.kind.as_str() {
-            "text" => dom.replace_text_content(idx, &mutation.value),
-            "html" => dom.replace_inner_html(idx, &mutation.value),
-            "append-html" => dom.append_inner_html(idx, &mutation.value, false),
-            "prepend-html" => dom.append_inner_html(idx, &mutation.value, true),
-            "attr-set" => {
-                if let Some((name, value)) = mutation.value.split_once('\0') {
-                    dom.set_attribute(idx, name, value);
-                }
-            }
-            "attr-remove" => dom.remove_attribute(idx, &mutation.value),
-            "style-set" => {
-                if let Some((name, value)) = mutation.value.split_once(':') {
-                    dom.set_style_property(idx, name, value);
-                }
-            }
-            "remove" => dom.remove_node(idx),
-            _ => {}
-        }
+        apply_single_script_mutation(dom, mutation);
     }
     if let Some(body) = report
         .body_html_override
@@ -1707,5 +1936,48 @@ mod tests {
             Some(RenderBlock::Container { .. }) | Some(RenderBlock::Form { .. })
         ));
         assert!(format!("{:?}", view.blocks).contains("Search"));
+    }
+}
+
+#[cfg(test)]
+mod retained_render_tests {
+    use super::*;
+
+    #[test]
+    fn retained_document_ignores_noop_runtime_snapshots() {
+        let report = ScriptReport::default();
+        let mut retained = RetainedDocument::new(
+            "https://example.com/",
+            "<html><body><p id='x'>Hello</p></body></html>",
+            SitePrivacy::default(),
+            &[],
+            0,
+            &report,
+        );
+        assert_eq!(retained.update_from_report(&report), InvalidationKind::None);
+    }
+
+    #[test]
+    fn retained_document_marks_dom_mutations_as_layout_damage() {
+        let mut report = ScriptReport::default();
+        let mut retained = RetainedDocument::new(
+            "https://example.com/",
+            "<html><body><p id='x'>Hello</p></body></html>",
+            SitePrivacy::default(),
+            &[],
+            0,
+            &report,
+        );
+        report.dom_mutations.push(DomMutation {
+            target_id: "x".into(),
+            kind: "text".into(),
+            value: "Updated".into(),
+        });
+        assert_eq!(
+            retained.update_from_report(&report),
+            InvalidationKind::Layout
+        );
+        let view = retained.render(&Blocker::default(), &report);
+        assert!(format!("{:?}", view.blocks).contains("Updated"));
     }
 }

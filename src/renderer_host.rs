@@ -9,7 +9,10 @@ use url::Url;
 use crate::blocker::Blocker;
 use crate::engine::{DocumentView, Engine};
 use crate::privacy::site_key_for_url;
-use crate::renderer_protocol::{DomEventRequest, RenderRequest, RendererCommand, RendererReply};
+use crate::renderer_protocol::{
+    DomEventRequest, RenderRequest, RendererCommand, RendererReply, RuntimeDamage,
+};
+use crate::script::ScriptReport;
 
 const MAX_SITE_RENDERERS: usize = 8;
 const MAX_RENDER_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
@@ -32,7 +35,9 @@ impl RendererMode {
 }
 
 pub struct RuntimeHostUpdate {
-    pub view: DocumentView,
+    pub view: Option<DocumentView>,
+    pub script_report: ScriptReport,
+    pub damage: RuntimeDamage,
     pub mode: RendererMode,
     pub default_prevented: bool,
 }
@@ -98,6 +103,8 @@ impl RendererHost {
         match reply {
             RendererReply::Runtime(result) => result.map(|update| RuntimeHostUpdate {
                 view: update.view,
+                script_report: update.script_report,
+                damage: update.damage,
                 mode,
                 default_prevented: update.default_prevented,
             }),
@@ -122,6 +129,8 @@ impl RendererHost {
         match reply {
             RendererReply::Runtime(result) => result.map(|update| RuntimeHostUpdate {
                 view: update.view,
+                script_report: update.script_report,
+                damage: update.damage,
                 mode,
                 default_prevented: update.default_prevented,
             }),

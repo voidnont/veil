@@ -5,7 +5,8 @@ use url::Url;
 
 use crate::engine::DocumentView;
 use crate::renderer_host::{RendererHost, RendererMode};
-use crate::renderer_protocol::DomEventRequest;
+use crate::renderer_protocol::{DomEventRequest, RuntimeDamage};
+use crate::script::ScriptReport;
 use crate::storage::SharedBrowserStorage;
 
 #[derive(Debug, Clone)]
@@ -24,13 +25,19 @@ pub struct RuntimeInteractionRequest {
     pub kind: RuntimeInteractionKind,
 }
 
+pub struct RuntimePageUpdate {
+    pub view: Option<DocumentView>,
+    pub script_report: ScriptReport,
+    pub damage: RuntimeDamage,
+}
+
 pub struct RuntimeInteractionResult {
     pub request_id: u64,
     pub tab_id: u64,
     pub generation: u64,
     pub mode: Option<RendererMode>,
     pub default_prevented: bool,
-    pub result: Result<DocumentView, String>,
+    pub result: Result<RuntimePageUpdate, String>,
 }
 
 pub struct RuntimeInteractionLoader {
@@ -58,15 +65,23 @@ impl RuntimeInteractionLoader {
             };
             let (mode, default_prevented, result) = match update {
                 Ok(update) => {
-                    if let Ok(url) = Url::parse(&update.view.url) {
+                    if let Ok(url) = Url::parse(&request.page_url) {
                         request
                             .storage
-                            .apply_script_snapshot(&url, &update.view.script_report.storage);
-                        for cookie in &update.view.script_report.cookie_writes {
+                            .apply_script_snapshot(&url, &update.script_report.storage);
+                        for cookie in &update.script_report.cookie_writes {
                             request.storage.store_set_cookie(&url, &url, cookie);
                         }
                     }
-                    (Some(update.mode), update.default_prevented, Ok(update.view))
+                    (
+                        Some(update.mode),
+                        update.default_prevented,
+                        Ok(RuntimePageUpdate {
+                            view: update.view,
+                            script_report: update.script_report,
+                            damage: update.damage,
+                        }),
+                    )
                 }
                 Err(error) => (None, false, Err(error)),
             };

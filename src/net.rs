@@ -1,17 +1,18 @@
+use std::collections::{HashMap, VecDeque};
 use std::io::Read;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{
-    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, COOKIE, DNT, LOCATION,
-    SET_COOKIE, USER_AGENT,
+    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_TYPE, COOKIE, DNT,
+    EXPIRES, LOCATION, SET_COOKIE, USER_AGENT, VARY,
 };
 use reqwest::StatusCode;
 use url::Url;
 
 use crate::blocker::{BlockContext, Blocker, ResourceType};
-use crate::privacy::{is_third_party, SitePrivacy};
+use crate::privacy::{is_third_party, site_key_for_url, SitePrivacy};
 use crate::storage::SharedBrowserStorage;
 
 const MAX_REDIRECTS: usize = 8;
@@ -26,12 +27,283 @@ const IMAGE_ACCEPT: &str =
     "image/webp,image/png,image/jpeg,image/gif,image/svg+xml,image/bmp,image/x-icon,*/*;q=0.1";
 
 static SHARED_HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
+static RESOURCE_CACHE: OnceLock<Mutex<MemoryResourceCache>> = OnceLock::new();
+static NETWORK_SCHEDULER: OnceLock<NetworkScheduler> = OnceLock::new();
+
+const MEMORY_CACHE_LIMIT_BYTES: usize = 64 * 1024 * 1024;
+const MEMORY_CACHE_MAX_ENTRIES: usize = 512;
+const MEMORY_CACHE_MAX_ENTRY_BYTES: usize = 4 * 1024 * 1024;
+const DEFAULT_RESOURCE_TTL: Duration = Duration::from_secs(60);
+const MAX_NETWORK_REQUESTS: usize = 12;
+const MAX_NORMAL_REQUESTS: usize = 10;
+const MAX_LOW_REQUESTS: usize = 6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestPriority {
+    High,
+    Normal,
+    Low,
+}
+
+impl RequestPriority {
+    fn for_resource(kind: ResourceType) -> Self {
+        match kind {
+            ResourceType::Document | ResourceType::Stylesheet | ResourceType::Script => Self::High,
+            ResourceType::Font | ResourceType::Other => Self::Normal,
+            ResourceType::Image | ResourceType::Media => Self::Low,
+        }
+    }
+
+    fn header_value(self) -> &'static str {
+        match self {
+            Self::High => "u=0, i",
+            Self::Normal => "u=3",
+            Self::Low => "u=5",
+        }
+    }
+}
+
+#[derive(Default)]
+struct SchedulerState {
+    active_total: usize,
+    active_normal: usize,
+    active_low: usize,
+}
+
+struct NetworkScheduler {
+    state: Mutex<SchedulerState>,
+    wake: Condvar,
+}
+
+impl NetworkScheduler {
+    fn new() -> Self {
+        Self {
+            state: Mutex::new(SchedulerState::default()),
+            wake: Condvar::new(),
+        }
+    }
+
+    fn acquire(&'static self, priority: RequestPriority) -> RequestPermit {
+        let mut state = self.state.lock().expect("network scheduler lock poisoned");
+        loop {
+            let allowed = match priority {
+                RequestPriority::High => state.active_total < MAX_NETWORK_REQUESTS,
+                RequestPriority::Normal => {
+                    state.active_total < MAX_NORMAL_REQUESTS
+                        && state.active_normal + state.active_low < MAX_NORMAL_REQUESTS
+                }
+                RequestPriority::Low => {
+                    state.active_total < MAX_LOW_REQUESTS && state.active_low < MAX_LOW_REQUESTS
+                }
+            };
+            if allowed {
+                state.active_total += 1;
+                match priority {
+                    RequestPriority::High => {}
+                    RequestPriority::Normal => state.active_normal += 1,
+                    RequestPriority::Low => state.active_low += 1,
+                }
+                break;
+            }
+            state = self
+                .wake
+                .wait(state)
+                .expect("network scheduler lock poisoned while waiting");
+        }
+        RequestPermit {
+            scheduler: self,
+            priority,
+        }
+    }
+}
+
+struct RequestPermit {
+    scheduler: &'static NetworkScheduler,
+    priority: RequestPriority,
+}
+
+impl Drop for RequestPermit {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.scheduler.state.lock() {
+            state.active_total = state.active_total.saturating_sub(1);
+            match self.priority {
+                RequestPriority::High => {}
+                RequestPriority::Normal => {
+                    state.active_normal = state.active_normal.saturating_sub(1)
+                }
+                RequestPriority::Low => state.active_low = state.active_low.saturating_sub(1),
+            }
+            self.scheduler.wake.notify_all();
+        }
+    }
+}
+
+fn network_scheduler() -> &'static NetworkScheduler {
+    NETWORK_SCHEDULER.get_or_init(NetworkScheduler::new)
+}
+
+#[derive(Clone)]
+struct CachedResource {
+    final_url: Url,
+    bytes: Vec<u8>,
+    content_type: String,
+    expires_at: Instant,
+    weight: usize,
+}
+
+#[derive(Default)]
+struct MemoryResourceCache {
+    entries: HashMap<String, CachedResource>,
+    lru: VecDeque<String>,
+    bytes: usize,
+}
+
+impl MemoryResourceCache {
+    fn get(&mut self, key: &str) -> Option<BinaryResponse> {
+        let entry = self.entries.get(key)?.clone();
+        if entry.expires_at <= Instant::now() {
+            self.remove(key);
+            return None;
+        }
+        self.touch(key);
+        Some(BinaryResponse {
+            final_url: entry.final_url,
+            bytes: entry.bytes,
+            content_type: entry.content_type,
+        })
+    }
+
+    fn insert(
+        &mut self,
+        key: String,
+        final_url: Url,
+        bytes: Vec<u8>,
+        content_type: String,
+        ttl: Duration,
+    ) {
+        if bytes.is_empty() || bytes.len() > MEMORY_CACHE_MAX_ENTRY_BYTES || ttl.is_zero() {
+            return;
+        }
+        self.remove(&key);
+        let weight = bytes
+            .len()
+            .saturating_add(content_type.len())
+            .saturating_add(final_url.as_str().len())
+            .saturating_add(key.len());
+        self.bytes = self.bytes.saturating_add(weight);
+        self.entries.insert(
+            key.clone(),
+            CachedResource {
+                final_url,
+                bytes,
+                content_type,
+                expires_at: Instant::now() + ttl,
+                weight,
+            },
+        );
+        self.lru.push_back(key);
+        self.evict();
+    }
+
+    fn touch(&mut self, key: &str) {
+        self.lru.retain(|candidate| candidate != key);
+        self.lru.push_back(key.to_owned());
+    }
+
+    fn remove(&mut self, key: &str) {
+        if let Some(entry) = self.entries.remove(key) {
+            self.bytes = self.bytes.saturating_sub(entry.weight);
+        }
+        self.lru.retain(|candidate| candidate != key);
+    }
+
+    fn evict(&mut self) {
+        while self.bytes > MEMORY_CACHE_LIMIT_BYTES || self.entries.len() > MEMORY_CACHE_MAX_ENTRIES
+        {
+            let Some(key) = self.lru.pop_front() else {
+                break;
+            };
+            if let Some(entry) = self.entries.remove(&key) {
+                self.bytes = self.bytes.saturating_sub(entry.weight);
+            }
+        }
+    }
+}
+
+fn resource_cache() -> &'static Mutex<MemoryResourceCache> {
+    RESOURCE_CACHE.get_or_init(|| Mutex::new(MemoryResourceCache::default()))
+}
+
+fn cacheable_resource(kind: ResourceType) -> bool {
+    matches!(
+        kind,
+        ResourceType::Image | ResourceType::Stylesheet | ResourceType::Script | ResourceType::Font
+    )
+}
+
+fn resource_cache_key(top_level: &Url, url: &Url, kind: ResourceType) -> String {
+    format!("{}|{:?}|{}", site_key_for_url(top_level), kind, url)
+}
+
+fn cache_ttl(headers: &HeaderMap) -> Option<Duration> {
+    let cache_control = headers
+        .get(CACHE_CONTROL)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if cache_control
+        .split(',')
+        .map(str::trim)
+        .any(|directive| directive == "no-store" || directive == "no-cache")
+    {
+        return None;
+    }
+    for directive in cache_control.split(',').map(str::trim) {
+        if let Some(raw) = directive.strip_prefix("max-age=") {
+            if let Ok(seconds) = raw.trim_matches('"').parse::<u64>() {
+                return (seconds > 0).then(|| Duration::from_secs(seconds.min(24 * 60 * 60)));
+            }
+        }
+    }
+    if let Some(expires) = headers
+        .get(EXPIRES)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| httpdate::parse_http_date(value).ok())
+    {
+        if let Ok(ttl) = expires.duration_since(SystemTime::now()) {
+            if !ttl.is_zero() {
+                return Some(ttl.min(Duration::from_secs(24 * 60 * 60)));
+            }
+        }
+        return None;
+    }
+    Some(DEFAULT_RESOURCE_TTL)
+}
+
+fn response_cacheable(headers: &HeaderMap, request_had_cookie: bool) -> Option<Duration> {
+    if request_had_cookie || headers.contains_key(SET_COOKIE) {
+        return None;
+    }
+    let vary = headers
+        .get(VARY)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if vary
+        .split(',')
+        .map(str::trim)
+        .any(|value| value == "cookie" || value == "*")
+    {
+        return None;
+    }
+    cache_ttl(headers)
+}
 
 fn build_shared_http_client() -> Client {
     let mut headers = HeaderMap::new();
     headers.insert(
         USER_AGENT,
-        HeaderValue::from_static("Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.6 VeilEngine/0.8.6"),
+        HeaderValue::from_static("Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.7 VeilEngine/0.8.7"),
     );
     headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.7"));
     headers.insert(DNT, HeaderValue::from_static("1"));
@@ -214,6 +486,8 @@ impl PrivacyNetwork {
             {
                 request = request.header(COOKIE, cookie);
             }
+            request = request.header("priority", RequestPriority::High.header_value());
+            let _permit = network_scheduler().acquire(RequestPriority::High);
             let response = request.send().map_err(|e| format!("Network error: {e}"))?;
             self.store_response_cookies(&initial_top_level, &current, &response);
 
@@ -345,16 +619,39 @@ impl PrivacyNetwork {
         limit: usize,
     ) -> Result<BinaryResponse, String> {
         validate_http_url(url)?;
+        self.enforce(url, top_level, resource_type, privacy)?;
+
+        let cache_key = resource_cache_key(top_level, url, resource_type);
+        let initial_cookie = self.storage.cookie_header_for(top_level, url, false, true);
+        if cacheable_resource(resource_type) && initial_cookie.is_none() {
+            if let Ok(mut cache) = resource_cache().lock() {
+                if let Some(hit) = cache.get(&cache_key) {
+                    if hit.final_url != *url {
+                        self.enforce(&hit.final_url, top_level, resource_type, privacy)?;
+                    }
+                    return Ok(hit);
+                }
+            }
+        }
+
+        let priority = RequestPriority::for_resource(resource_type);
         let mut current = url.clone();
         for _ in 0..=MAX_REDIRECTS {
             self.enforce(&current, top_level, resource_type, privacy)?;
-            let mut request = self.client.get(current.clone()).header(ACCEPT, accept);
-            if let Some(cookie) = self
+            let mut request = self
+                .client
+                .get(current.clone())
+                .header(ACCEPT, accept)
+                .header("priority", priority.header_value());
+            let cookie_header = self
                 .storage
-                .cookie_header_for(top_level, &current, false, true)
-            {
+                .cookie_header_for(top_level, &current, false, true);
+            let request_had_cookie = cookie_header.is_some();
+            if let Some(cookie) = cookie_header {
                 request = request.header(COOKIE, cookie);
             }
+
+            let _permit = network_scheduler().acquire(priority);
             let response = request
                 .send()
                 .map_err(|e| format!("Subresource request failed: {e}"))?;
@@ -369,8 +666,24 @@ impl PrivacyNetwork {
                 return Err(format!("Subresource returned HTTP {status}"));
             }
             let response_type = content_type(&response);
+            let response_headers = response.headers().clone();
             let bytes = read_limited(response, limit)
                 .map_err(|e| format!("Failed to read subresource: {e}"))?;
+
+            if cacheable_resource(resource_type) && bytes.len() <= MEMORY_CACHE_MAX_ENTRY_BYTES {
+                if let Some(ttl) = response_cacheable(&response_headers, request_had_cookie) {
+                    if let Ok(mut cache) = resource_cache().lock() {
+                        cache.insert(
+                            cache_key.clone(),
+                            final_url.clone(),
+                            bytes.clone(),
+                            response_type.clone(),
+                            ttl,
+                        );
+                    }
+                }
+            }
+
             return Ok(BinaryResponse {
                 final_url,
                 bytes,
@@ -571,6 +884,41 @@ mod tests {
         assert!(IMAGE_ACCEPT.contains("image/webp"));
         assert!(IMAGE_ACCEPT.contains("image/png"));
         assert!(IMAGE_ACCEPT.contains("image/jpeg"));
+    }
+
+    #[test]
+    fn cache_keys_are_partitioned_by_top_level_site() {
+        let a = Url::parse("https://a.example/page").unwrap();
+        let b = Url::parse("https://b.example.net/page").unwrap();
+        let resource = Url::parse("https://cdn.example.org/app.js").unwrap();
+        assert_ne!(
+            resource_cache_key(&a, &resource, ResourceType::Script),
+            resource_cache_key(&b, &resource, ResourceType::Script)
+        );
+    }
+
+    #[test]
+    fn no_store_responses_are_not_cached() {
+        let mut headers = HeaderMap::new();
+        headers.insert(CACHE_CONTROL, HeaderValue::from_static("public, no-store"));
+        assert!(cache_ttl(&headers).is_none());
+    }
+
+    #[test]
+    fn priorities_reserve_capacity_for_critical_resources() {
+        assert_eq!(
+            RequestPriority::for_resource(ResourceType::Document),
+            RequestPriority::High
+        );
+        assert_eq!(
+            RequestPriority::for_resource(ResourceType::Stylesheet),
+            RequestPriority::High
+        );
+        assert_eq!(
+            RequestPriority::for_resource(ResourceType::Image),
+            RequestPriority::Low
+        );
+        assert!(MAX_LOW_REQUESTS < MAX_NETWORK_REQUESTS);
     }
 
     #[test]

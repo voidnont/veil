@@ -3,9 +3,9 @@ use std::io::{self, BufRead, Write};
 
 use veil_engine::blocker::Blocker;
 use veil_engine::dom::Dom;
-use veil_engine::engine::{DocumentView, Engine};
+use veil_engine::engine::{paint_fingerprint, DocumentView, InvalidationKind, RetainedDocument};
 use veil_engine::renderer_protocol::{
-    RenderRequest, RendererCommand, RendererReply, RuntimeUpdate,
+    RenderRequest, RendererCommand, RendererReply, RuntimeDamage, RuntimeUpdate,
 };
 use veil_engine::script::{JavascriptSandbox, LiveJavascriptRuntime, ScriptReport};
 
@@ -13,9 +13,12 @@ const MAX_REQUEST_LINE: usize = 24 * 1024 * 1024;
 const MAX_SESSIONS: usize = 32;
 
 struct LiveSession {
-    request: RenderRequest,
     runtime: Option<LiveJavascriptRuntime>,
     report: ScriptReport,
+    retained: RetainedDocument,
+    blocker: Blocker,
+    last_view: DocumentView,
+    last_paint_fingerprint: u64,
 }
 
 fn main() {
@@ -62,10 +65,7 @@ fn main() {
                                 &session.report.storage,
                             );
                             session.report = report;
-                            Ok(RuntimeUpdate {
-                                view: render_session(session),
-                                default_prevented,
-                            })
+                            Ok(update_session(session, default_prevented))
                         });
                     RendererReply::Runtime(result)
                 }
@@ -81,10 +81,7 @@ fn main() {
                                 return Err("JavaScript is disabled for this page".into());
                             };
                             session.report = runtime.tick(elapsed_ms, &session.report.storage);
-                            Ok(RuntimeUpdate {
-                                view: render_session(session),
-                                default_prevented: false,
-                            })
+                            Ok(update_session(session, false))
                         });
                     RendererReply::Runtime(result)
                 }
@@ -122,27 +119,78 @@ fn create_session(request: RenderRequest) -> (LiveSession, Result<DocumentView, 
         (None, report)
     };
 
+    let mut blocker = Blocker::default();
+    if !request.custom_filters.trim().is_empty() {
+        blocker.replace_custom_filters(request.custom_filters.clone());
+    }
+    let retained = RetainedDocument::new(
+        &request.url,
+        &request.html,
+        request.privacy,
+        &request.external_css,
+        request.external_script_count,
+        &report,
+    );
+    let mut view = retained.render(&blocker, &report);
+    view.external_stylesheets = request.external_css.len();
+    let fingerprint = paint_fingerprint(&view);
     let session = LiveSession {
-        request,
         runtime,
         report,
+        retained,
+        blocker,
+        last_view: view.clone(),
+        last_paint_fingerprint: fingerprint,
     };
-    let view = render_session(&session);
     (session, Ok(view))
 }
 
-fn render_session(session: &LiveSession) -> DocumentView {
-    let mut blocker = Blocker::default();
-    if !session.request.custom_filters.trim().is_empty() {
-        blocker.replace_custom_filters(session.request.custom_filters.clone());
+fn update_session(session: &mut LiveSession, default_prevented: bool) -> RuntimeUpdate {
+    let requested_damage = session.retained.update_from_report(&session.report);
+    let old_title = session.last_view.title.clone();
+    let old_icon = session.last_view.icon_url.clone();
+
+    let mut candidate = if requested_damage.needs_layout() {
+        session.retained.render(&session.blocker, &session.report)
+    } else {
+        let mut view = session.last_view.clone();
+        session
+            .retained
+            .update_cached_view(&mut view, &session.report, requested_damage);
+        view
+    };
+    candidate.external_stylesheets = session.last_view.external_stylesheets;
+    candidate.external_scripts = session.last_view.external_scripts;
+    candidate.web_fonts = session.last_view.web_fonts.clone();
+
+    let fingerprint = paint_fingerprint(&candidate);
+    let paint_changed = fingerprint != session.last_paint_fingerprint;
+    let metadata_changed = candidate.title != old_title || candidate.icon_url != old_icon;
+    let actual_damage = if paint_changed {
+        if requested_damage == InvalidationKind::Layout {
+            RuntimeDamage::Layout
+        } else {
+            RuntimeDamage::Paint
+        }
+    } else if metadata_changed {
+        RuntimeDamage::Metadata
+    } else {
+        RuntimeDamage::None
+    };
+
+    let view = if actual_damage == RuntimeDamage::None {
+        session.last_view.script_report = session.report.clone();
+        None
+    } else {
+        session.last_paint_fingerprint = fingerprint;
+        session.last_view = candidate.clone();
+        Some(candidate)
+    };
+
+    RuntimeUpdate {
+        view,
+        script_report: session.report.clone(),
+        damage: actual_damage,
+        default_prevented,
     }
-    Engine::default().render_with_script_report(
-        &session.request.url,
-        &session.request.html,
-        &blocker,
-        session.request.privacy,
-        &session.request.external_css,
-        session.request.external_script_count,
-        session.report.clone(),
-    )
 }
