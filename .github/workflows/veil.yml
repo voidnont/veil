@@ -1,0 +1,78 @@
+name: Veil CI
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      pending: ${{ steps.detect.outputs.pending }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Detect pending source update
+        id: detect
+        shell: bash
+        run: |
+          if [ -f tools/update-0.8.1.patch ]; then
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install Rust
+        if: steps.detect.outputs.pending == 'true'
+        uses: dtolnay/rust-toolchain@stable
+      - name: Apply source update
+        if: steps.detect.outputs.pending == 'true'
+        shell: bash
+        run: |
+          git apply --check tools/update-0.8.1.patch
+          git apply tools/update-0.8.1.patch
+      - name: Test updated source
+        if: steps.detect.outputs.pending == 'true'
+        run: cargo test --all-targets
+      - name: Build updated source
+        if: steps.detect.outputs.pending == 'true'
+        run: cargo build --release --bins
+      - name: Promote tested source
+        if: steps.detect.outputs.pending == 'true'
+        shell: bash
+        run: |
+          rm tools/update-0.8.1.patch
+          git add -A
+          git config user.name "veil-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "Veil Browser 0.8.1 runtime and UI update"
+          git push origin HEAD:main
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        run: cargo test --all-targets
+      - name: Release build
+        run: cargo build --release --bins
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: veil-${{ runner.os }}
+          path: |
+            target/release/veil-browser*
+            target/release/veil-engine*
+          if-no-files-found: error
