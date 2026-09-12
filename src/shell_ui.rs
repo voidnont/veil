@@ -5,13 +5,8 @@ use eframe::egui::{self, Color32, RichText, ScrollArea, Sense};
 use crate::{VeilApp, COLLAPSED_DOCK_WIDTH, EXPANDED_DOCK_WIDTH};
 
 const SHELL_BG: Color32 = Color32::from_rgb(12, 12, 16);
-const PANEL_BG: Color32 = Color32::from_rgba_unmultiplied(22, 22, 28, 246);
 const PAGE_BG: Color32 = Color32::from_rgb(18, 18, 22);
-const HOVER_BG: Color32 = Color32::from_rgba_unmultiplied(255, 255, 255, 14);
-const ACTIVE_BG: Color32 = Color32::from_rgba_unmultiplied(255, 255, 255, 22);
-const ACCENT_BG: Color32 = Color32::from_rgba_unmultiplied(132, 102, 222, 34);
 const ACCENT: Color32 = Color32::from_rgb(151, 123, 232);
-const BORDER: Color32 = Color32::from_rgba_unmultiplied(255, 255, 255, 24);
 
 fn sidebar_progress(app: &VeilApp, ctx: &egui::Context) -> f32 {
     ctx.animate_bool_with_time(
@@ -57,7 +52,7 @@ pub(crate) fn render_content(app: &mut VeilApp, ctx: &egui::Context) {
 
                 egui::Frame::default()
                     .fill(PAGE_BG)
-                    .stroke(egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 16)))
+                    .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 16)))
                     .corner_radius(14)
                     .inner_margin(0)
                     .show(ui, |ui| {
@@ -87,8 +82,8 @@ pub(crate) fn render_sidebar(app: &mut VeilApp, ctx: &egui::Context) {
         .fixed_pos(egui::pos2(8.0, 8.0))
         .show(ctx, |ui| {
             egui::Frame::default()
-                .fill(PANEL_BG)
-                .stroke(egui::Stroke::new(1.0, BORDER))
+                .fill(Color32::from_rgba_unmultiplied(22, 22, 28, 246))
+                .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 24)))
                 .corner_radius(14)
                 .inner_margin(6)
                 .show(ui, |ui| {
@@ -136,7 +131,7 @@ pub(crate) fn render_sidebar(app: &mut VeilApp, ctx: &egui::Context) {
                         for index in 0..3 {
                             let active = app.active_space == index;
                             let frame = egui::Frame::default()
-                                .fill(if active { ACCENT_BG } else { Color32::TRANSPARENT })
+                                .fill(if active { Color32::from_rgba_unmultiplied(132, 102, 222, 34) } else { Color32::TRANSPARENT })
                                 .corner_radius(9)
                                 .inner_margin(1);
                             frame.show(ui, |ui| {
@@ -204,9 +199,9 @@ pub(crate) fn render_sidebar(app: &mut VeilApp, ctx: &egui::Context) {
                                 let loading = app.tabs[index].loading;
                                 let active = index == app.active_tab;
 
-                                let row_fill = if active { ACTIVE_BG } else { Color32::TRANSPARENT };
+                                let row_fill = if active { Color32::from_rgba_unmultiplied(255, 255, 255, 22) } else { Color32::TRANSPARENT };
                                 let row_stroke = if active {
-                                    egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 18))
+                                    egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 18))
                                 } else {
                                     egui::Stroke::NONE
                                 };
@@ -325,7 +320,7 @@ pub(crate) fn render_address_pill(app: &mut VeilApp, ctx: &egui::Context) {
                     if focused {
                         Color32::from_rgba_unmultiplied(190, 175, 240, 64)
                     } else {
-                        BORDER
+                        Color32::from_rgba_unmultiplied(255, 255, 255, 24)
                     },
                 ))
                 .corner_radius(12)
