@@ -1,6 +1,6 @@
 [package]
 name = "veil-browser"
-version = "0.8.4"
+version = "0.8.5"
 edition = "2021"
 description = "Veil Browser: a privacy-first experimental desktop browser with the independent Veil Engine"
 license = "MIT"
@@ -21,7 +21,10 @@ path = "src/bin/veil_engine.rs"
 eframe = "0.31"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "gzip", "brotli", "deflate"] }
 url = "2.5"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "ico"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "ico", "bmp"] }
+resvg = { version = "0.48", default-features = false, features = ["text", "raster-images"] }
+base64 = "0.22"
+percent-encoding = "2.3"
 boa_engine = { version = "0.22.0", default-features = false, features = ["annex-b"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

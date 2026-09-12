@@ -22,7 +22,8 @@ const MAX_SCRIPT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_FONT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_MEDIA_BYTES: usize = 64 * 1024 * 1024;
 const MAX_UPLOAD_BYTES: usize = 32 * 1024 * 1024;
-const IMAGE_ACCEPT: &str = "image/webp,image/png,image/jpeg,image/gif,image/x-icon,*/*;q=0.1";
+const IMAGE_ACCEPT: &str =
+    "image/webp,image/png,image/jpeg,image/gif,image/svg+xml,image/bmp,image/x-icon,*/*;q=0.1";
 
 pub struct PageResponse {
     pub final_url: Url,
@@ -32,6 +33,7 @@ pub struct PageResponse {
 pub struct ImageResponse {
     pub final_url: Url,
     pub bytes: Vec<u8>,
+    pub content_type: String,
 }
 
 pub struct BinaryResponse {
@@ -78,7 +80,7 @@ impl PrivacyNetwork {
         headers.insert(
             USER_AGENT,
             HeaderValue::from_static(
-                "Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.4 VeilEngine/0.8.4",
+                "Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.5 VeilEngine/0.8.5",
             ),
         );
         headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.7"));
@@ -379,15 +381,14 @@ impl PrivacyNetwork {
             IMAGE_ACCEPT,
             MAX_IMAGE_BYTES,
         )?;
-        if !response.content_type.is_empty() && !response.content_type.starts_with("image/") {
-            return Err(format!(
-                "Blocked non-image response: {}",
-                response.content_type
-            ));
-        }
+        // Match Gecko's image loader behavior: do not reject solely from the HTTP
+        // Content-Type. The image worker sniffs the bytes first because real CDNs
+        // sometimes serve valid image bytes as application/octet-stream or with a
+        // stale/wrong MIME type.
         Ok(ImageResponse {
             final_url: response.final_url,
             bytes: response.bytes,
+            content_type: response.content_type,
         })
     }
 

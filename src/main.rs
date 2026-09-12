@@ -2013,7 +2013,7 @@ impl VeilApp {
             image_placeholder(ui, alt, "Invalid image URL");
             return;
         };
-        if !matches!(image_url.scheme(), "http" | "https") {
+        if !matches!(image_url.scheme(), "http" | "https" | "data") {
             image_placeholder(ui, alt, "Unsupported image scheme");
             return;
         }

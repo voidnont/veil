@@ -1073,33 +1073,104 @@ fn supported_picture_type(kind: Option<&String>) -> bool {
             | "image/gif"
             | "image/x-icon"
             | "image/vnd.microsoft.icon"
+            | "image/bmp"
+            | "image/svg+xml"
     )
 }
 
 fn best_srcset_candidate(set: &str) -> Option<String> {
-    let mut best: Option<(f32, String)> = None;
+    #[derive(Clone)]
+    struct Candidate {
+        url: String,
+        width: Option<f32>,
+        density: Option<f32>,
+    }
+
+    let mut candidates = Vec::new();
     for raw in set.split(',') {
         let mut parts = raw.split_whitespace();
         let Some(url) = parts.next().map(str::trim).filter(|url| !url.is_empty()) else {
             continue;
         };
         let descriptor = parts.next().unwrap_or_default();
-        let score = if let Some(width) = descriptor.strip_suffix('w') {
-            width.parse::<f32>().unwrap_or(1.0)
-        } else if let Some(scale) = descriptor.strip_suffix('x') {
-            scale.parse::<f32>().unwrap_or(1.0) * 10_000.0
+        let (width, density) = if let Some(raw_width) = descriptor.strip_suffix('w') {
+            (
+                raw_width.parse::<f32>().ok().filter(|value| *value > 0.0),
+                None,
+            )
+        } else if let Some(raw_density) = descriptor.strip_suffix('x') {
+            (
+                None,
+                raw_density.parse::<f32>().ok().filter(|value| *value > 0.0),
+            )
         } else {
-            1.0
+            (None, Some(1.0))
         };
-        if best
-            .as_ref()
-            .map(|(best_score, _)| score >= *best_score)
+        candidates.push(Candidate {
+            url: url.to_owned(),
+            width,
+            density,
+        });
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // Gecko's ResponsiveImageSelector prefers the lowest density greater than
+    // or equal to the display density, otherwise the greatest available below
+    // it. Veil does not yet have the layout viewport inside Engine, so use a
+    // conservative 1x / 1280 CSS-pixel target rather than always downloading
+    // the largest candidate.
+    if candidates.iter().any(|candidate| candidate.width.is_some()) {
+        let target = 1280.0_f32;
+        let mut above: Option<&Candidate> = None;
+        let mut below: Option<&Candidate> = None;
+        for candidate in candidates
+            .iter()
+            .filter(|candidate| candidate.width.is_some())
+        {
+            let width = candidate.width.unwrap();
+            if width >= target {
+                if above
+                    .and_then(|current| current.width)
+                    .map(|current| width < current)
+                    .unwrap_or(true)
+                {
+                    above = Some(candidate);
+                }
+            } else if below
+                .and_then(|current| current.width)
+                .map(|current| width > current)
+                .unwrap_or(true)
+            {
+                below = Some(candidate);
+            }
+        }
+        return above.or(below).map(|candidate| candidate.url.clone());
+    }
+
+    let target = 1.0_f32;
+    let mut above: Option<&Candidate> = None;
+    let mut below: Option<&Candidate> = None;
+    for candidate in &candidates {
+        let density = candidate.density.unwrap_or(1.0);
+        if density >= target {
+            if above
+                .and_then(|current| current.density)
+                .map(|current| density < current)
+                .unwrap_or(true)
+            {
+                above = Some(candidate);
+            }
+        } else if below
+            .and_then(|current| current.density)
+            .map(|current| density > current)
             .unwrap_or(true)
         {
-            best = Some((score, url.to_owned()));
+            below = Some(candidate);
         }
     }
-    best.map(|(_, url)| url)
+    above.or(below).map(|candidate| candidate.url.clone())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1603,6 +1674,22 @@ mod tests {
         let rendered = format!("{:?}", picture.blocks);
         assert!(rendered.contains("/large.webp"));
         assert!(!rendered.contains("/photo.avif"));
+    }
+
+    #[test]
+    fn srcset_prefers_one_x_instead_of_largest_density() {
+        assert_eq!(
+            best_srcset_candidate("small.jpg 1x, medium.jpg 2x, huge.jpg 3x").as_deref(),
+            Some("small.jpg")
+        );
+    }
+
+    #[test]
+    fn srcset_prefers_reasonable_width_instead_of_largest_asset() {
+        assert_eq!(
+            best_srcset_candidate("a.jpg 320w, b.jpg 640w, c.jpg 1280w, d.jpg 4096w").as_deref(),
+            Some("c.jpg")
+        );
     }
 
     #[test]
