@@ -35,6 +35,8 @@ const COLLAPSED_DOCK_WIDTH: f32 = 54.0;
 const EXPANDED_DOCK_WIDTH: f32 = 260.0;
 const HOVER_REVEAL_DELAY: Duration = Duration::from_secs(1);
 const MAX_IMAGE_LOADS: usize = 6;
+const MAX_IMAGE_CACHE_ENTRIES: usize = 192;
+const MAX_PENDING_RUNTIME_EVENTS: usize = 12;
 const MAX_PAGE_RESULTS_PER_FRAME: usize = 1;
 const MAX_RUNTIME_RESULTS_PER_FRAME: usize = 1;
 const MAX_IMAGE_RESULTS_PER_FRAME: usize = 2;
@@ -181,7 +183,7 @@ struct PendingNavigation {
 struct Tab {
     id: u64,
     address: String,
-    page: DocumentView,
+    page: Arc<DocumentView>,
     back: Vec<HistoryEntry>,
     forward: Vec<HistoryEntry>,
     status: String,
@@ -195,7 +197,7 @@ impl Tab {
         Self {
             id,
             address: HOME.to_owned(),
-            page: DocumentView::home(),
+            page: Arc::new(DocumentView::home()),
             back: Vec::new(),
             forward: Vec::new(),
             status: "Private session · Shield active · ephemeral partitioned storage".into(),
@@ -236,6 +238,8 @@ struct VeilApp {
     next_runtime_request_id: u64,
     last_runtime_tick: Instant,
     runtime_inflight: HashSet<u64>,
+    pending_runtime_events: HashMap<u64, VecDeque<DomEventRequest>>,
+    pending_runtime_elapsed: HashMap<u64, u64>,
     storage: SharedBrowserStorage,
     profiles: PrivacyProfiles,
     blocked_log: VecDeque<String>,
@@ -248,6 +252,8 @@ struct VeilApp {
     window_controls_revealed: bool,
     active_space: usize,
     image_cache: HashMap<String, CachedImage>,
+    image_cache_touch: HashMap<String, u64>,
+    image_cache_clock: u64,
     image_load_queue: VecDeque<ImageLoadRequest>,
     image_loads_inflight: usize,
     media_cache: HashMap<String, CachedMedia>,
@@ -279,6 +285,8 @@ impl VeilApp {
             next_runtime_request_id: 1,
             last_runtime_tick: Instant::now(),
             runtime_inflight: HashSet::new(),
+            pending_runtime_events: HashMap::new(),
+            pending_runtime_elapsed: HashMap::new(),
             storage,
             profiles: PrivacyProfiles::new(),
             blocked_log: VecDeque::new(),
@@ -291,6 +299,8 @@ impl VeilApp {
             window_controls_revealed: false,
             active_space: 0,
             image_cache: HashMap::new(),
+            image_cache_touch: HashMap::new(),
+            image_cache_clock: 0,
             image_load_queue: VecDeque::new(),
             image_loads_inflight: 0,
             media_cache: HashMap::new(),
@@ -470,7 +480,7 @@ impl VeilApp {
             tab.generation += 1;
             tab.loading = false;
             tab.address = HOME.into();
-            tab.page = DocumentView::home();
+            tab.page = Arc::new(DocumentView::home());
             tab.status = "Private new tab".into();
             self.display_lists.remove(&tab.id);
             return;
@@ -549,12 +559,12 @@ impl VeilApp {
                         diff.reused,
                         diff.changed,
                     );
-                    tab.page = view;
+                    tab.page = Arc::new(view);
                 }
                 Err(err) => {
                     let target = tab.address.clone();
                     tab.status = format!("Navigation failed: {err}");
-                    tab.page = DocumentView::error(&target, &err);
+                    tab.page = Arc::new(DocumentView::error(&target, &err));
                 }
             }
         }
@@ -579,7 +589,29 @@ impl VeilApp {
         if !javascript_enabled {
             return;
         }
-        if self.runtime_inflight.contains(&tab.id) {
+        let tab_id = tab.id;
+        if self.runtime_inflight.contains(&tab_id) {
+            let queue = self.pending_runtime_events.entry(tab_id).or_default();
+            let coalescible = matches!(
+                event.event_type.as_str(),
+                "input" | "change" | "mousemove" | "pointermove" | "scroll"
+            );
+            if coalescible {
+                if let Some(existing) = queue.iter_mut().rev().find(|existing| {
+                    existing.node_id == event.node_id && existing.event_type == event.event_type
+                }) {
+                    *existing = event;
+                    return;
+                }
+            }
+            if queue.len() >= MAX_PENDING_RUNTIME_EVENTS {
+                if coalescible {
+                    queue.pop_front();
+                } else {
+                    return;
+                }
+            }
+            queue.push_back(event);
             return;
         }
 
@@ -604,11 +636,14 @@ impl VeilApp {
                 break;
             };
             processed += 1;
-            self.runtime_inflight.remove(&result.tab_id);
+            let completed_tab_id = result.tab_id;
+            self.runtime_inflight.remove(&completed_tab_id);
             let Some(index) = self.tabs.iter().position(|tab| tab.id == result.tab_id) else {
                 continue;
             };
             if self.tabs[index].generation != result.generation {
+                self.pending_runtime_events.remove(&completed_tab_id);
+                self.pending_runtime_elapsed.remove(&completed_tab_id);
                 continue;
             }
             match result.result {
@@ -620,9 +655,9 @@ impl VeilApp {
                         // Preserve them while applying a full retained-layout replacement.
                         view.web_fonts = self.tabs[index].page.web_fonts.clone();
                         install_web_fonts(ctx, &view.web_fonts, &mut self.web_font_registry);
-                        self.tabs[index].page = view;
+                        self.tabs[index].page = Arc::new(view);
                     } else if let Some(patch) = update.patch {
-                        let page = &mut self.tabs[index].page;
+                        let page = Arc::make_mut(&mut self.tabs[index].page);
                         let start = patch.start.min(page.blocks.len());
                         let end = start
                             .saturating_add(patch.remove_count)
@@ -637,7 +672,7 @@ impl VeilApp {
                     } else {
                         // RefreshDriver-style no-op or metadata-only tick: advance runtime state
                         // without replacing the retained display list.
-                        let page = &mut self.tabs[index].page;
+                        let page = Arc::make_mut(&mut self.tabs[index].page);
                         page.title = update.title;
                         page.icon_url = update.icon_url;
                         page.cosmetic_hidden = update.cosmetic_hidden;
@@ -672,10 +707,68 @@ impl VeilApp {
                     self.tabs[index].status = format!("Live interaction unavailable: {error}");
                 }
             }
+            self.flush_pending_runtime(completed_tab_id);
         }
         if processed == MAX_RUNTIME_RESULTS_PER_FRAME {
             ctx.request_repaint();
         }
+    }
+
+    fn flush_pending_runtime(&mut self, tab_id: u64) {
+        if self.runtime_inflight.contains(&tab_id) {
+            return;
+        }
+        let Some(index) = self.tabs.iter().position(|tab| tab.id == tab_id) else {
+            self.pending_runtime_events.remove(&tab_id);
+            self.pending_runtime_elapsed.remove(&tab_id);
+            return;
+        };
+
+        let next_event = self
+            .pending_runtime_events
+            .get_mut(&tab_id)
+            .and_then(VecDeque::pop_front);
+        if self
+            .pending_runtime_events
+            .get(&tab_id)
+            .is_some_and(VecDeque::is_empty)
+        {
+            self.pending_runtime_events.remove(&tab_id);
+        }
+        if let Some(event) = next_event {
+            self.dispatch_runtime_event(index, event);
+            return;
+        }
+
+        let elapsed_ms = self
+            .pending_runtime_elapsed
+            .remove(&tab_id)
+            .unwrap_or(0)
+            .min(1_000);
+        if elapsed_ms == 0 || self.tabs[index].page.url == HOME {
+            return;
+        }
+        let javascript_enabled = !is_guarded_script_site(&self.tabs[index].page.url)
+            && Url::parse(&self.tabs[index].page.url)
+                .ok()
+                .map(|url| self.profiles.for_url(&url).javascript)
+                .unwrap_or(false);
+        if !javascript_enabled {
+            return;
+        }
+        let request_id = self.next_runtime_request_id;
+        self.next_runtime_request_id = self.next_runtime_request_id.saturating_add(1);
+        self.runtime_inflight.insert(tab_id);
+        let tab = &self.tabs[index];
+        self.runtime_loader.start(RuntimeInteractionRequest {
+            request_id,
+            tab_id,
+            generation: tab.generation,
+            page_url: tab.page.url.clone(),
+            session_id: format!("tab-{}-{}", tab.id, tab.generation),
+            storage: self.storage.clone(),
+            kind: RuntimeInteractionKind::Tick(elapsed_ms),
+        });
     }
 
     fn visible_runtime_indices(&self) -> Vec<usize> {
@@ -731,9 +824,17 @@ impl VeilApp {
                     .ok()
                     .map(|url| self.profiles.for_url(&url).javascript)
                     .unwrap_or(false);
-            if !javascript_enabled || self.runtime_inflight.contains(&tab.id) {
+            if !javascript_enabled {
                 continue;
             }
+            if self.runtime_inflight.contains(&tab.id) {
+                let pending = self.pending_runtime_elapsed.entry(tab.id).or_default();
+                *pending = pending.saturating_add(elapsed_ms).min(1_000);
+                continue;
+            }
+            let tick_elapsed = elapsed_ms
+                .saturating_add(self.pending_runtime_elapsed.remove(&tab.id).unwrap_or(0))
+                .min(1_000);
             let request_id = self.next_runtime_request_id;
             self.next_runtime_request_id = self.next_runtime_request_id.saturating_add(1);
             self.runtime_inflight.insert(tab.id);
@@ -744,8 +845,30 @@ impl VeilApp {
                 page_url: tab.page.url.clone(),
                 session_id: format!("tab-{}-{}", tab.id, tab.generation),
                 storage: self.storage.clone(),
-                kind: RuntimeInteractionKind::Tick(elapsed_ms),
+                kind: RuntimeInteractionKind::Tick(tick_elapsed),
             });
+        }
+    }
+
+    fn touch_image_cache(&mut self, key: &str) {
+        self.image_cache_clock = self.image_cache_clock.saturating_add(1);
+        self.image_cache_touch
+            .insert(key.to_owned(), self.image_cache_clock);
+    }
+
+    fn evict_image_cache(&mut self) {
+        while self.image_cache.len() > MAX_IMAGE_CACHE_ENTRIES {
+            let candidate = self
+                .image_cache
+                .iter()
+                .filter(|(_, entry)| !matches!(entry, &CachedImage::Loading))
+                .min_by_key(|(key, _)| self.image_cache_touch.get(*key).copied().unwrap_or(0))
+                .map(|(key, _)| key.clone());
+            let Some(key) = candidate else {
+                break;
+            };
+            self.image_cache.remove(&key);
+            self.image_cache_touch.remove(&key);
         }
     }
 
@@ -781,7 +904,10 @@ impl VeilApp {
                 }
                 Err(err) => CachedImage::Failed(err),
             };
-            self.image_cache.insert(result.key, cached);
+            let key = result.key;
+            self.image_cache.insert(key.clone(), cached);
+            self.touch_image_cache(&key);
+            self.evict_image_cache();
         }
         if processed == MAX_IMAGE_RESULTS_PER_FRAME {
             ctx.request_repaint();
@@ -2232,6 +2358,7 @@ impl VeilApp {
             });
             ctx.request_repaint_after(Duration::from_millis(40));
         }
+        self.touch_image_cache(&cache_key);
 
         match self.image_cache.get(&cache_key).cloned() {
             Some(CachedImage::Ready { texture, size }) => {
