@@ -1,0 +1,48 @@
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -18,10 +18,12 @@ use veil_engine::runtime_interaction::{RuntimeInteractionKind, RuntimeInteraction
+ use veil_engine::script::CanvasCommand;
+ use veil_engine::storage::SharedBrowserStorage;
+ use veil_engine::style::{ComputedStyle, FontKind, JustifyContent, LayoutMode, TextAlign};
++
++mod shell_ui;
+ 
+ const HOME: &str = "veil://home";
+ const DEFAULT_GLASS_TRANSPARENCY: f32 = 0.12;
+-const COLLAPSED_DOCK_WIDTH: f32 = 56.0;
+-const EXPANDED_DOCK_WIDTH: f32 = 248.0;
++const COLLAPSED_DOCK_WIDTH: f32 = 54.0;
++const EXPANDED_DOCK_WIDTH: f32 = 260.0;
+@@ -99,7 +101,7 @@ fn configure_visuals(ctx: &egui::Context) {
+     visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(10);
+     visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(10);
+     visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(10);
+     visuals.widgets.active.corner_radius = egui::CornerRadius::same(10);
+-    visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(210, 118, 108, 78);
++    visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(132, 102, 222, 72);
+     ctx.set_visuals(visuals);
+@@ -212,10 +214,10 @@ impl VeilApp {
+     fn glass_frame(&self, extra_opacity: f32) -> egui::Frame {
+         egui::Frame::default()
+-            .fill(Color32::from_rgba_unmultiplied(22, 23, 27, self.glass_alpha(extra_opacity)))
+-            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 34)))
+-            .corner_radius(16)
+-            .inner_margin(8)
++            .fill(Color32::from_rgba_unmultiplied(20, 20, 26, self.glass_alpha(extra_opacity)))
++            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 24)))
++            .corner_radius(14)
++            .inner_margin(6)
+@@ -1588,9 +1590,9 @@ impl eframe::App for VeilApp {
+             ctx.request_repaint_after(Duration::from_millis(40));
+         }
+ 
+-        self.render_content(ctx);
+-        self.render_sidebar(ctx);
+-        self.render_address_pill(ctx);
++        shell_ui::render_content(self, ctx);
++        shell_ui::render_sidebar(self, ctx);
++        shell_ui::render_address_pill(self, ctx);
+         self.render_privacy_panel(ctx);
+     }
+ }
