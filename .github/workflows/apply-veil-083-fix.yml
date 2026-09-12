@@ -24,6 +24,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
 
+      - name: Correct generated Rust backslash escape
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/veil_083_patch.py')
+          text = path.read_text()
+          old = "            } else if byte == b'\\\\' {"
+          new = "            } else if byte == b'\\\\\\\\' {"
+          if old not in text:
+              raise SystemExit('backslash escape target not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
       - name: Apply Veil 0.8.3 patch
         run: python3 tools/veil_083_patch.py
 
