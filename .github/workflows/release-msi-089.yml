@@ -1,0 +1,119 @@
+name: Release Veil Browser 0.8.9 MSI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/release-msi-089.yml
+
+permissions:
+  contents: write
+
+jobs:
+  release-msi:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test
+        run: cargo test --all-targets
+
+      - name: Build release binaries
+        run: cargo build --release --bins
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install WiX Toolset
+        shell: powershell
+        run: |
+          dotnet tool install --global wix
+          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+          wix --version
+
+      - name: Build MSI
+        shell: powershell
+        run: |
+          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          wix build installer\veil-browser.wxs -arch x64 -o dist\Veil-Browser-0.8.9-x64.msi
+          if (-not (Test-Path 'dist\Veil-Browser-0.8.9-x64.msi')) {
+            throw 'MSI was not produced.'
+          }
+          $msi = Get-Item 'dist\Veil-Browser-0.8.9-x64.msi'
+          if ($msi.Length -lt 1000000) {
+            throw "MSI is unexpectedly small: $($msi.Length) bytes"
+          }
+
+      - name: Create checksum and release notes
+        shell: powershell
+        run: |
+          $hash = (Get-FileHash 'dist\Veil-Browser-0.8.9-x64.msi' -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  Veil-Browser-0.8.9-x64.msi" | Set-Content 'dist\Veil-Browser-0.8.9-x64.sha256' -Encoding ascii
+          @'
+          ## Veil Browser 0.8.9
+
+          Windows x64 MSI release for Veil Browser and the independent Veil Engine.
+
+          ### Performance work
+          - retained display-list and viewport virtualization improvements
+          - cheap Arc-based page snapshots instead of cloning the complete page tree every frame
+          - bounded decoded/GPU image texture cache
+          - coalesced high-frequency runtime events under load
+          - preserved timer/rAF elapsed time while a renderer session is busy
+          - persistent runtime worker and reduced retained-paint hot-path allocations
+
+          ### Installer
+          - installs `veil-browser.exe` and `veil-engine.exe`
+          - per-user installation under Local AppData
+          - Start Menu shortcuts for normal and Safe UI launch
+          - Desktop shortcut
+          - major-upgrade support for later Veil releases
+
+          Veil Engine remains an experimental independent browser engine; modern sites that depend on unsupported Web APIs may still need compatibility work.
+          '@ | Set-Content 'dist\release-notes.md' -Encoding utf8
+
+      - name: Upload MSI workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: veil-browser-0.8.9-msi
+          path: |
+            dist/Veil-Browser-0.8.9-x64.msi
+            dist/Veil-Browser-0.8.9-x64.sha256
+          if-no-files-found: error
+
+      - name: Create Git tag and GitHub Release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = 'v0.8.9'
+          git fetch --tags --force
+          $remoteTag = git ls-remote --tags origin "refs/tags/$tag"
+          if (-not $remoteTag) {
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git tag -a $tag -m 'Veil Browser 0.8.9' $env:GITHUB_SHA
+            git push origin $tag
+          }
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag `
+              'dist\Veil-Browser-0.8.9-x64.msi' `
+              'dist\Veil-Browser-0.8.9-x64.sha256' `
+              --clobber
+          } else {
+            gh release create $tag `
+              'dist\Veil-Browser-0.8.9-x64.msi' `
+              'dist\Veil-Browser-0.8.9-x64.sha256' `
+              --title 'Veil Browser 0.8.9' `
+              --notes-file 'dist\release-notes.md' `
+              --latest
+          }
