@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  prepare:
+  promote:
     runs-on: ubuntu-latest
     outputs:
       pending: ${{ steps.detect.outputs.pending }}
@@ -18,11 +18,11 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Detect pending source update
+      - name: Detect pending shell update
         id: detect
         shell: bash
         run: |
-          if compgen -G "tools/update-parts/part-*.gz" > /dev/null; then
+          if [ -f tools/veil-shell-main.patch ]; then
             echo "pending=true" >> "$GITHUB_OUTPUT"
           else
             echo "pending=false" >> "$GITHUB_OUTPUT"
@@ -35,21 +35,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
 
-      - name: Install Rust
+      - uses: dtolnay/rust-toolchain@stable
         if: steps.detect.outputs.pending == 'true'
-        uses: dtolnay/rust-toolchain@stable
 
-      - name: Assemble and verify source update
+      - name: Apply shell update
         if: steps.detect.outputs.pending == 'true'
         shell: bash
         run: |
-          cat tools/update-parts/part-*.gz > /tmp/veil-update.patch.gz.b64
-          base64 --decode /tmp/veil-update.patch.gz.b64 > /tmp/veil-update.patch.gz
-          echo "3724f8f80bb578ecc70385a48ab23da5798e0437a396553d18bbce6e7aa21bf8  /tmp/veil-update.patch.gz" | sha256sum -c -
-          gzip -dc /tmp/veil-update.patch.gz > /tmp/veil-update.patch
-          echo "8a768c5ff8203f80562b61c8dea506d59ffac11a15638fb55af5fa0f31dacf98  /tmp/veil-update.patch" | sha256sum -c -
-          git apply --check /tmp/veil-update.patch
-          git apply /tmp/veil-update.patch
+          git apply --check tools/veil-shell-main.patch
+          git apply tools/veil-shell-main.patch
 
       - name: Test updated source
         if: steps.detect.outputs.pending == 'true'
@@ -59,19 +53,20 @@ jobs:
         if: steps.detect.outputs.pending == 'true'
         run: cargo build --release --bins
 
-      - name: Promote tested source
+      - name: Promote tested source to main
         if: steps.detect.outputs.pending == 'true'
         shell: bash
         run: |
-          rm -rf tools/update-parts
+          rm -f tools/veil-shell-main.patch
+          rm -rf tools/update-parts tools/source-update
           git add -A
           git config user.name "veil-ci"
           git config user.email "actions@users.noreply.github.com"
-          git commit -m "Veil Browser 0.8.1 runtime and UI update"
+          git commit -m "Veil Browser shell UI refresh"
           git push origin HEAD:main
 
   build:
-    needs: prepare
+    needs: promote
     strategy:
       fail-fast: false
       matrix:
@@ -105,5 +100,3 @@ jobs:
             target/release/veil-browser*
             target/release/veil-engine*
           if-no-files-found: error
-
-# Retry staging after all verified parts are present.
