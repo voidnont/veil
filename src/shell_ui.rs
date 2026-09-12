@@ -7,15 +7,15 @@ use veil_engine::style::{ComputedStyle, JustifyContent, LayoutMode};
 use crate::{PendingNavigation, VeilApp, COLLAPSED_DOCK_WIDTH, EXPANDED_DOCK_WIDTH, HOME};
 
 const SHELL_BG: Color32 = Color32::from_rgb(10, 11, 14);
-const SIDEBAR_BG: Color32 = Color32::from_rgba_unmultiplied(18, 19, 24, 248);
-const TOOLBAR_BG: Color32 = Color32::from_rgba_unmultiplied(20, 21, 27, 250);
+const SIDEBAR_BG: Color32 = Color32::from_rgba_premultiplied(18, 19, 24, 248);
+const TOOLBAR_BG: Color32 = Color32::from_rgba_premultiplied(20, 21, 27, 250);
 const PAGE_BG: Color32 = Color32::from_rgb(15, 16, 20);
-const SURFACE: Color32 = Color32::from_rgba_unmultiplied(255, 255, 255, 10);
-const SURFACE_HOVER: Color32 = Color32::from_rgba_unmultiplied(255, 255, 255, 18);
-const BORDER: Color32 = Color32::from_rgba_unmultiplied(255, 255, 255, 22);
+const SURFACE: Color32 = Color32::from_rgba_premultiplied(10, 10, 10, 10);
+const SURFACE_HOVER: Color32 = Color32::from_rgba_premultiplied(18, 18, 18, 18);
+const BORDER: Color32 = Color32::from_rgba_premultiplied(22, 22, 22, 22);
 const TEXT_MUTED: Color32 = Color32::from_gray(145);
 const ACCENT: Color32 = Color32::from_rgb(150, 121, 234);
-const ACTIVE: Color32 = Color32::from_rgba_unmultiplied(150, 121, 234, 34);
+const ACTIVE: Color32 = Color32::from_rgba_premultiplied(20, 16, 31, 34);
 const TOOLBAR_HEIGHT: f32 = 58.0;
 
 fn sidebar_progress(app: &VeilApp, ctx: &egui::Context) -> f32 {
