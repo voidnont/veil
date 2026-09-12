@@ -24,6 +24,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
 
+      - name: Fix duplicate renderer mapping staging
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("tools/veil_087_gecko_architecture.py")
+          text = path.read_text()
+          old = '''    if count != 1:\n        raise SystemExit(f"{path}: expected exactly one match, found {count}: {old[:120]!r}")\n    p.write_text(text.replace(old, new, 1))'''
+          new = '''    renderer_runtime_mapping = (\n        path == "src/renderer_host.rs"\n        and "RendererReply::Runtime(result) => result.map(|update| RuntimeHostUpdate" in old\n    )\n    expected = (1, 2) if renderer_runtime_mapping else (1,)\n    if count not in expected:\n        raise SystemExit(f"{path}: expected match count {expected}, found {count}: {old[:120]!r}")\n    p.write_text(text.replace(old, new, 1))'''
+          if text.count(old) != 1:
+              raise SystemExit("replace_once helper shape changed unexpectedly")
+          path.write_text(text.replace(old, new, 1))
+          PY
+
       - name: Apply retained Gecko-inspired architecture
         run: python3 tools/veil_087_gecko_architecture.py
 
