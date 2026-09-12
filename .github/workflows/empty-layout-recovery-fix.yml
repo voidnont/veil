@@ -1,0 +1,90 @@
+name: Apply Empty Layout Recovery Fix
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'veil-ci'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Patch Veil layout recovery
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/engine.rs')
+          s = path.read_text()
+
+          # Thread a recovery flag through the layout builder and inline text collector.
+          signature = '''    cosmetic_enabled: bool,\n    hidden: &mut usize,'''
+          if s.count(signature) < 3:
+              raise SystemExit(f'expected at least 3 builder signatures, found {s.count(signature)}')
+          s = s.replace(signature, '''    cosmetic_enabled: bool,\n    recover_visibility: bool,\n    hidden: &mut usize,''')
+
+          s = s.replace('cosmetic_enabled, hidden, &mut pending_runs)', 'cosmetic_enabled, recover_visibility, hidden, &mut pending_runs)')
+          s = s.replace('cosmetic_enabled, hidden) {', 'cosmetic_enabled, recover_visibility, hidden) {')
+          s = s.replace('cosmetic_enabled, hidden, &mut runs);', 'cosmetic_enabled, recover_visibility, hidden, &mut runs);')
+          s = s.replace('cosmetic_enabled, hidden);', 'cosmetic_enabled, recover_visibility, hidden);')
+          s = s.replace('cosmetic_enabled, hidden, out);', 'cosmetic_enabled, recover_visibility, hidden, out);')
+
+          # Normal pass keeps author visibility rules intact.
+          normal_call = '''            privacy.shields,\n            &mut cosmetic_hidden,\n        );'''
+          if normal_call not in s:
+              raise SystemExit('normal build_children call not found')
+          s = s.replace(normal_call, '''            privacy.shields,\n            false,\n            &mut cosmetic_hidden,\n        );''', 1)
+
+          # In recovery mode, preserve computed styling/layout but relax display/visibility hiding.
+          old_block_style = '''    let style = sheet.compute_node(dom, idx, parent_style);\n    if style.display_none { return None; }'''
+          new_block_style = '''    let mut style = sheet.compute_node(dom, idx, parent_style);\n    if recover_visibility { style.display_none = false; }\n    if style.display_none { return None; }'''
+          if old_block_style not in s:
+              raise SystemExit('build_block style gate not found')
+          s = s.replace(old_block_style, new_block_style, 1)
+
+          old_inline_style = '''            let styled = sheet.compute_node(dom, idx, inherited);\n            if styled.display_none { return; }'''
+          new_inline_style = '''            let mut styled = sheet.compute_node(dom, idx, inherited);\n            if recover_visibility { styled.display_none = false; }\n            if styled.display_none { return; }'''
+          if old_inline_style not in s:
+              raise SystemExit('collect_runs style gate not found')
+          s = s.replace(old_inline_style, new_inline_style, 1)
+
+          # Before falling all the way back to a flat text paragraph, retry the real layout tree.
+          old_fallback = '''        attach_canvas_commands(&mut blocks, &script_report.canvas_commands);\n\n        if blocks.is_empty() {\n            let fallback = build_compatibility_fallback(dom, &base);'''
+          new_fallback = '''        attach_canvas_commands(&mut blocks, &script_report.canvas_commands);\n\n        // Many modern apps intentionally hide their root until hydration. If Veil's first\n        // paint is completely empty, retry the same structural renderer while relaxing only\n        // visibility/display suppression and cosmetic blocking. This keeps flex/grid,\n        // dimensions, backgrounds, images, forms, and text instead of flattening the page.\n        if blocks.is_empty() {\n            let mut recovery_hidden = 0usize;\n            let mut recovered = build_children(\n                dom,\n                dom.root,\n                &base,\n                &sheet,\n                blocker,\n                page_url.as_ref(),\n                false,\n                true,\n                &mut recovery_hidden,\n            );\n            attach_canvas_commands(&mut recovered, &script_report.canvas_commands);\n            if !recovered.is_empty() {\n                blocks = recovered;\n            }\n        }\n\n        if blocks.is_empty() {\n            let fallback = build_compatibility_fallback(dom, &base);'''
+          if old_fallback not in s:
+              raise SystemExit('compatibility fallback insertion point not found')
+          s = s.replace(old_fallback, new_fallback, 1)
+
+          old_test = '''    fn compatibility_view_recovers_visible_text_when_layout_is_empty() {\n        let engine = Engine::default();\n        let blocker = Blocker::default();\n        let view = engine.parse(\n            "https://example.com/",\n            "<html><head><style>body{display:none}</style></head><body><a href='/result'>Visible result</a></body></html>",\n            &blocker,\n            SitePrivacy::default(),\n        );\n        let rendered_text = format!("{:?}", view.blocks);\n        assert!(rendered_text.contains("Compatibility view"));\n        assert!(rendered_text.contains("Visible result"));\n    }'''
+          new_test = '''    fn recovery_pass_restores_hidden_app_shell_before_text_fallback() {\n        let engine = Engine::default();\n        let blocker = Blocker::default();\n        let view = engine.parse(\n            "https://example.com/",\n            "<html><head><style>body{display:none}.card{display:flex;padding:12px}</style></head><body><div class='card'><a href='/result'>Visible result</a></div></body></html>",\n            &blocker,\n            SitePrivacy::default(),\n        );\n        let rendered_text = format!("{:?}", view.blocks);\n        assert!(!rendered_text.contains("Compatibility view"));\n        assert!(rendered_text.contains("Visible result"));\n        assert!(rendered_text.contains("FlexRow"));\n    }'''
+          if old_test not in s:
+              raise SystemExit('old compatibility test not found')
+          s = s.replace(old_test, new_test, 1)
+
+          path.write_text(s)
+          PY
+
+      - name: Test patch
+        run: cargo test --all-targets
+
+      - name: Commit engine fix
+        shell: bash
+        run: |
+          if git diff --quiet -- src/engine.rs; then
+            echo "No engine changes needed."
+            exit 0
+          fi
+          git add src/engine.rs
+          git config user.name "veil-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "Recover hidden app shells before compatibility view"
+          git push origin HEAD:main
