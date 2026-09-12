@@ -5,9 +5,11 @@ on:
     branches: [main]
     paths:
       - .github/workflows/release-msi-089.yml
+      - installer/veil-browser.wxs
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   release-msi:
@@ -18,24 +20,37 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Test
-        run: cargo test --all-targets
-
-      - name: Build release binaries
-        run: cargo build --release --bins
+      - name: Download validated Veil 0.8.9 Windows binaries
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 34714853334 --repo voidnont/veilbrowser -n veil-Windows -D downloaded
+          $browser = Get-ChildItem downloaded -Recurse -Filter 'veil-browser.exe' | Select-Object -First 1
+          $engine = Get-ChildItem downloaded -Recurse -Filter 'veil-engine.exe' | Select-Object -First 1
+          if (-not $browser -or -not $engine) {
+            throw 'Validated Veil 0.8.9 Windows binaries were not found in the CI artifact.'
+          }
+          New-Item -ItemType Directory -Force target\release | Out-Null
+          Copy-Item $browser.FullName target\release\veil-browser.exe
+          Copy-Item $engine.FullName target\release\veil-engine.exe
+          Write-Host "Using browser binary: $($browser.FullName)"
+          Write-Host "Using engine binary: $($engine.FullName)"
 
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
 
-      - name: Install WiX Toolset
+      - name: Install WiX Toolset 5.0.2
         shell: powershell
         run: |
-          dotnet tool install --global wix
+          dotnet tool install --global wix --version 5.0.2
           $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
-          wix --version
+          $version = wix --version
+          Write-Host "WiX $version"
+          if (-not ($version -like '5.0.2*')) {
+            throw "Expected WiX 5.0.2 but got $version"
+          }
 
       - name: Build MSI
         shell: powershell
@@ -50,12 +65,14 @@ jobs:
           if ($msi.Length -lt 1000000) {
             throw "MSI is unexpectedly small: $($msi.Length) bytes"
           }
+          Write-Host "MSI size: $($msi.Length) bytes"
 
       - name: Create checksum and release notes
         shell: powershell
         run: |
           $hash = (Get-FileHash 'dist\Veil-Browser-0.8.9-x64.msi' -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  Veil-Browser-0.8.9-x64.msi" | Set-Content 'dist\Veil-Browser-0.8.9-x64.sha256' -Encoding ascii
+          Write-Host "SHA256: $hash"
           @'
           ## Veil Browser 0.8.9
 
@@ -94,12 +111,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = 'v0.8.9'
+          $releaseCommit = '06bba36d8710b3cdb3af406464c65480f59c4048'
           git fetch --tags --force
           $remoteTag = git ls-remote --tags origin "refs/tags/$tag"
           if (-not $remoteTag) {
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git tag -a $tag -m 'Veil Browser 0.8.9' $env:GITHUB_SHA
+            git tag -a $tag -m 'Veil Browser 0.8.9' $releaseCommit
             git push origin $tag
           }
 
