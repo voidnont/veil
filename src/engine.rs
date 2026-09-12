@@ -323,10 +323,34 @@ impl Engine {
             blocker,
             page_url.as_ref(),
             privacy.shields,
+            false,
             &mut cosmetic_hidden,
         );
 
         attach_canvas_commands(&mut blocks, &script_report.canvas_commands);
+
+        // Many modern apps intentionally hide their root until hydration. If Veil's first
+        // paint is completely empty, retry the same structural renderer while relaxing only
+        // visibility/display suppression and cosmetic blocking. This keeps flex/grid,
+        // dimensions, backgrounds, images, forms, and text instead of flattening the page.
+        if blocks.is_empty() {
+            let mut recovery_hidden = 0usize;
+            let mut recovered = build_children(
+                dom,
+                dom.root,
+                &base,
+                &sheet,
+                blocker,
+                page_url.as_ref(),
+                false,
+                true,
+                &mut recovery_hidden,
+            );
+            attach_canvas_commands(&mut recovered, &script_report.canvas_commands);
+            if !recovered.is_empty() {
+                blocks = recovered;
+            }
+        }
 
         if blocks.is_empty() {
             let fallback = build_compatibility_fallback(dom, &base);
@@ -513,6 +537,7 @@ fn build_children(
     blocker: &Blocker,
     page_url: Option<&Url>,
     cosmetic_enabled: bool,
+    recover_visibility: bool,
     hidden: &mut usize,
 ) -> Vec<RenderBlock> {
     let mut blocks = Vec::new();
@@ -520,15 +545,15 @@ fn build_children(
 
     for &child in &dom.nodes[parent_idx].children {
         match &dom.nodes[child].kind {
-            NodeKind::Text(_) => collect_runs(dom, child, parent_style, None, sheet, blocker, page_url, cosmetic_enabled, hidden, &mut pending_runs),
+            NodeKind::Text(_) => collect_runs(dom, child, parent_style, None, sheet, blocker, page_url, cosmetic_enabled, recover_visibility, hidden, &mut pending_runs),
             NodeKind::Element(el) if is_ignored_tag(&el.tag) => {}
             NodeKind::Element(el) if is_block_tag(&el.tag) => {
                 flush_pending(&mut pending_runs, parent_style, &mut blocks);
-                if let Some(block) = build_block(dom, child, parent_style, sheet, blocker, page_url, cosmetic_enabled, hidden) {
+                if let Some(block) = build_block(dom, child, parent_style, sheet, blocker, page_url, cosmetic_enabled, recover_visibility, hidden) {
                     blocks.push(block);
                 }
             }
-            NodeKind::Element(_) => collect_runs(dom, child, parent_style, None, sheet, blocker, page_url, cosmetic_enabled, hidden, &mut pending_runs),
+            NodeKind::Element(_) => collect_runs(dom, child, parent_style, None, sheet, blocker, page_url, cosmetic_enabled, recover_visibility, hidden, &mut pending_runs),
         }
     }
 
@@ -544,6 +569,7 @@ fn build_block(
     blocker: &Blocker,
     page_url: Option<&Url>,
     cosmetic_enabled: bool,
+    recover_visibility: bool,
     hidden: &mut usize,
 ) -> Option<RenderBlock> {
     let NodeKind::Element(el) = &dom.nodes[idx].kind else { return None; };
@@ -557,13 +583,14 @@ fn build_block(
         }
     }
 
-    let style = sheet.compute_node(dom, idx, parent_style);
+    let mut style = sheet.compute_node(dom, idx, parent_style);
+    if recover_visibility { style.display_none = false; }
     if style.display_none { return None; }
 
     match el.tag.as_str() {
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
             let mut runs = Vec::new();
-            collect_runs(dom, idx, &style, None, sheet, blocker, page_url, cosmetic_enabled, hidden, &mut runs);
+            collect_runs(dom, idx, &style, None, sheet, blocker, page_url, cosmetic_enabled, recover_visibility, hidden, &mut runs);
             compact_runs(&mut runs);
             (!runs.is_empty()).then(|| RenderBlock::Heading {
                 level: el.tag[1..].parse::<u8>().unwrap_or(2), runs, style
@@ -571,7 +598,7 @@ fn build_block(
         }
         "p" | "blockquote" | "li" => {
             let mut runs = Vec::new();
-            collect_runs(dom, idx, &style, None, sheet, blocker, page_url, cosmetic_enabled, hidden, &mut runs);
+            collect_runs(dom, idx, &style, None, sheet, blocker, page_url, cosmetic_enabled, recover_visibility, hidden, &mut runs);
             compact_runs(&mut runs);
             if el.tag == "li" && !runs.is_empty() { runs.insert(0, run("• ", &style, None)); }
             (!runs.is_empty()).then(|| RenderBlock::Paragraph { runs, style })
@@ -635,7 +662,7 @@ fn build_block(
             })
         }
         _ => {
-            let children = build_children(dom, idx, &style, sheet, blocker, page_url, cosmetic_enabled, hidden);
+            let children = build_children(dom, idx, &style, sheet, blocker, page_url, cosmetic_enabled, recover_visibility, hidden);
             (!children.is_empty()).then(|| RenderBlock::Container { children, style })
         }
     }
@@ -734,6 +761,7 @@ fn collect_runs(
     blocker: &Blocker,
     page_url: Option<&Url>,
     cosmetic_enabled: bool,
+    recover_visibility: bool,
     hidden: &mut usize,
     out: &mut Vec<TextRun>,
 ) {
@@ -765,7 +793,8 @@ fn collect_runs(
                     if blocker.should_hide_element(url, &el.tag, &el.attrs) { *hidden += 1; return; }
                 }
             }
-            let styled = sheet.compute_node(dom, idx, inherited);
+            let mut styled = sheet.compute_node(dom, idx, inherited);
+            if recover_visibility { styled.display_none = false; }
             if styled.display_none { return; }
             if el.tag == "br" {
                 out.push(TextRun {
@@ -778,7 +807,7 @@ fn collect_runs(
             }
             let href = if el.tag == "a" { el.attrs.get("href").cloned().or(inherited_href) } else { inherited_href };
             for &child in &dom.nodes[idx].children {
-                collect_runs(dom, child, &styled, href.clone(), sheet, blocker, page_url, cosmetic_enabled, hidden, out);
+                collect_runs(dom, child, &styled, href.clone(), sheet, blocker, page_url, cosmetic_enabled, recover_visibility, hidden, out);
             }
         }
     }
@@ -879,18 +908,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compatibility_view_recovers_visible_text_when_layout_is_empty() {
+    fn recovery_pass_restores_hidden_app_shell_before_text_fallback() {
         let engine = Engine::default();
         let blocker = Blocker::default();
         let view = engine.parse(
             "https://example.com/",
-            "<html><head><style>body{display:none}</style></head><body><a href='/result'>Visible result</a></body></html>",
+            "<html><head><style>body{display:none}.card{display:flex;padding:12px}</style></head><body><div class='card'><a href='/result'>Visible result</a></div></body></html>",
             &blocker,
             SitePrivacy::default(),
         );
         let rendered_text = format!("{:?}", view.blocks);
-        assert!(rendered_text.contains("Compatibility view"));
+        assert!(!rendered_text.contains("Compatibility view"));
         assert!(rendered_text.contains("Visible result"));
+        assert!(rendered_text.contains("FlexRow"));
     }
 
     #[test]
