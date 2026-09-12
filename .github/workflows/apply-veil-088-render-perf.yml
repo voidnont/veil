@@ -29,19 +29,14 @@ jobs:
           python3 tools/veil_088_render_perf.py
           python3 - <<'PY'
           from pathlib import Path
+          import re
           path = Path('src/engine.rs')
           text = path.read_text()
-          old = '''        assert_eq!(
-              retained.update_from_report(&report),
-              InvalidationKind::Layout
-          );'''
-          new = '''        assert_eq!(
-              retained.update_from_report(&report),
-              InvalidationKind::LayoutSubtree
-          );'''
-          if text.count(old) != 1:
-              raise SystemExit(f'expected one retained-layout test assertion, found {text.count(old)}')
-          path.write_text(text.replace(old, new, 1))
+          pattern = re.compile(r'(retained\.update_from_report\(&report\),\s*)InvalidationKind::Layout(\s*\);)')
+          text, count = pattern.subn(lambda match: match.group(1) + 'InvalidationKind::LayoutSubtree' + match.group(2), text, count=1)
+          if count != 1:
+              raise SystemExit(f'expected one retained-layout test assertion, found {count}')
+          path.write_text(text)
           PY
 
       - name: Format
