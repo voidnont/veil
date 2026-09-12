@@ -74,9 +74,10 @@ jobs:
 
       - name: Commit tested source
         run: |
+          git checkout HEAD -- .github/workflows/veil.yml
           rm -f tools/veil_083_patch.py
-          rm -f .github/workflows/apply-veil-083-fix.yml
-          git add -A
+          git add Cargo.toml Cargo.lock src/main.rs src/shell_ui.rs src/loader.rs src/net.rs
+          git add -u -- tools/veil_083_patch.py
           git config user.name "veil-ci"
           git config user.email "actions@users.noreply.github.com"
           git commit -m "Reveal top chrome and recover YouTube thumbnails"
