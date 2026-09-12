@@ -40,24 +40,36 @@ jobs:
       - name: Apply Veil 0.8.2 patch
         run: python3 tools/veil_082_patch.py
 
-      - name: Guard direct runtime events on YouTube
+      - name: Guard remaining runtime events on YouTube
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
+
           path = Path('src/main.rs')
           text = path.read_text()
-          old = '''        let javascript_enabled = Url::parse(&tab.page.url)
-            .ok()
-            .map(|url| self.profiles.for_url(&url).javascript)
-            .unwrap_or(false);'''
-          new = '''        let javascript_enabled = !is_guarded_script_site(&tab.page.url)
-            && Url::parse(&tab.page.url)
-                .ok()
-                .map(|url| self.profiles.for_url(&url).javascript)
-                .unwrap_or(false);'''
-          if text.count(old) != 1:
-              raise SystemExit(f'direct runtime event guard expected one match, found {text.count(old)}')
-          path.write_text(text.replace(old, new, 1))
+          pattern = re.compile(
+              r'(?P<indent>^[ \t]*)let javascript_enabled = Url::parse\(&tab\.page\.url\)\n'
+              r'(?P=indent)    \.ok\(\)\n'
+              r'(?P=indent)    \.map\(\|url\| self\.profiles\.for_url\(&url\)\.javascript\)\n'
+              r'(?P=indent)    \.unwrap_or\(false\);',
+              re.MULTILINE,
+          )
+
+          def guard(match):
+              indent = match.group('indent')
+              return (
+                  f'{indent}let javascript_enabled = !is_guarded_script_site(&tab.page.url)\n'
+                  f'{indent}    && Url::parse(&tab.page.url)\n'
+                  f'{indent}        .ok()\n'
+                  f'{indent}        .map(|url| self.profiles.for_url(&url).javascript)\n'
+                  f'{indent}        .unwrap_or(false);'
+              )
+
+          updated, count = pattern.subn(guard, text)
+          if count != 1:
+              raise SystemExit(f'remaining runtime guard expected one match, found {count}')
+          path.write_text(updated)
           PY
 
       - name: Format
