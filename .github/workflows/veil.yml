@@ -105,3 +105,5 @@ jobs:
             target/release/veil-browser*
             target/release/veil-engine*
           if-no-files-found: error
+
+# Retry staging after all verified parts are present.
