@@ -1,0 +1,52 @@
+name: Apply Veil 0.8.4 Image Fix
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+
+      - name: Apply pending YouTube model recovery
+        run: |
+          if [ -f tools/veil_083_youtube_views.py ]; then
+            python3 tools/veil_083_youtube_views.py
+          fi
+
+      - name: Apply global image pipeline fix
+        run: python3 tools/veil_084_image_fix.py
+
+      - name: Format
+        run: cargo fmt --all
+
+      - name: Test
+        env:
+          CARGO_TARGET_DIR: /tmp/veil-target
+        run: cargo test --all-targets
+
+      - name: Commit tested source
+        run: |
+          rm -f tools/veil_083_youtube_views.py tools/veil_084_image_fix.py
+          git add Cargo.toml Cargo.lock src/engine.rs src/net.rs src/loader.rs
+          git add -u -- tools/veil_083_youtube_views.py tools/veil_084_image_fix.py
+          git config user.name "veil-ci"
+          git config user.email "actions@users.noreply.github.com"
+          git commit -m "Fix images across Veil Engine"
+          git push origin HEAD:main
