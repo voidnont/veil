@@ -1,0 +1,173 @@
+diff -ruN '--exclude=.github' '--exclude=assets' a/Cargo.toml b/Cargo.toml
+--- a/Cargo.toml	2026-09-11 12:03:26.000000000 +0000
++++ b/Cargo.toml	2026-09-12 09:26:36.702980635 +0000
+@@ -1,6 +1,6 @@
+ [package]
+ name = "veil-browser"
+-version = "0.8.0"
++version = "0.8.1"
+ edition = "2021"
+ description = "Veil Browser: a privacy-first experimental desktop browser with the independent Veil Engine"
+ license = "MIT"
+diff -ruN '--exclude=.github' '--exclude=assets' a/src/bin/veil_engine.rs b/src/bin/veil_engine.rs
+--- a/src/bin/veil_engine.rs	2026-09-11 12:04:20.000000000 +0000
++++ b/src/bin/veil_engine.rs	2026-09-12 09:26:58.834163423 +0000
+@@ -1,4 +1,4 @@
+-use std::collections::HashMap;
++use std::collections::{HashMap, VecDeque};
+ use std::io::{self, BufRead, Write};
+ 
+ use veil_engine::blocker::Blocker;
+@@ -22,6 +22,7 @@
+     let stdin = io::stdin();
+     let mut stdout = io::BufWriter::new(io::stdout().lock());
+     let mut sessions: HashMap<String, LiveSession> = HashMap::new();
++    let mut session_order: VecDeque<String> = VecDeque::new();
+ 
+     for line in stdin.lock().lines() {
+         let line = match line {
+@@ -37,10 +38,16 @@
+                 Ok(RendererCommand::Render(request)) => {
+                     let session_id = request.session_id.clone();
+                     let (session, result) = create_session(request);
++                    if let Some(position) = session_order.iter().position(|id| id == &session_id) {
++                        session_order.remove(position);
++                    }
+                     if sessions.len() >= MAX_SESSIONS && !sessions.contains_key(&session_id) {
+-                        if let Some(key) = sessions.keys().next().cloned() { sessions.remove(&key); }
++                        if let Some(oldest) = session_order.pop_front() {
++                            sessions.remove(&oldest);
++                        }
+                     }
+-                    sessions.insert(session_id, session);
++                    sessions.insert(session_id.clone(), session);
++                    session_order.push_back(session_id);
+                     RendererReply::Render(result)
+                 }
+                 Ok(RendererCommand::Event { session_id, event }) => {
+@@ -63,6 +70,12 @@
+                                 default_prevented,
+                             })
+                         });
++                    if sessions.contains_key(&session_id) {
++                        if let Some(position) = session_order.iter().position(|id| id == &session_id) {
++                            session_order.remove(position);
++                        }
++                        session_order.push_back(session_id.clone());
++                    }
+                     RendererReply::Runtime(result)
+                 }
+                 Ok(RendererCommand::Tick { session_id, elapsed_ms }) => {
+@@ -79,8 +92,21 @@
+                                 default_prevented: false,
+                             })
+                         });
++                    if sessions.contains_key(&session_id) {
++                        if let Some(position) = session_order.iter().position(|id| id == &session_id) {
++                            session_order.remove(position);
++                        }
++                        session_order.push_back(session_id.clone());
++                    }
+                     RendererReply::Runtime(result)
+                 }
++                Ok(RendererCommand::Close { session_id }) => {
++                    sessions.remove(&session_id);
++                    if let Some(position) = session_order.iter().position(|id| id == &session_id) {
++                        session_order.remove(position);
++                    }
++                    RendererReply::Closed(Ok(()))
++                }
+                 Err(err) => RendererReply::Render(Err(format!("invalid engine request: {err}"))),
+             }
+         };
+diff -ruN '--exclude=.github' '--exclude=assets' a/src/engine.rs b/src/engine.rs
+--- a/src/engine.rs	2026-09-11 12:04:05.000000000 +0000
++++ b/src/engine.rs	2026-09-12 09:38:04.046438607 +0000
+@@ -23,7 +23,7 @@
+     pub font_name: Option<String>,
+ }
+ 
+-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
++#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+ pub enum FormControlKind {
+     Text,
+     Search,
+@@ -32,6 +32,7 @@
+     Password,
+     Hidden,
+     Checkbox,
++    Radio,
+     File,
+     Submit,
+     Button,
+@@ -332,7 +333,7 @@
+             let fallback = build_compatibility_fallback(dom, &base);
+             if fallback.is_empty() {
+                 blocks.push(RenderBlock::Notice(
+-                    "This document has no visible content Veil Browser 0.8.0 can currently paint. It may depend on unsupported Web APIs, canvas/WebGL, iframes, or a newer layout feature.".into(),
++                    "This document has no visible content Veil Browser 0.8.1 can currently paint. It may depend on unsupported Web APIs, canvas/WebGL, iframes, or a newer layout feature.".into(),
+                 ));
+             } else {
+                 blocks.push(RenderBlock::Notice(
+@@ -653,6 +654,7 @@
+                     "password" => FormControlKind::Password,
+                     "hidden" => FormControlKind::Hidden,
+                     "checkbox" => FormControlKind::Checkbox,
++                    "radio" => FormControlKind::Radio,
+                     "file" => FormControlKind::File,
+                     "submit" => FormControlKind::Submit,
+                     "button" => FormControlKind::Button,
+@@ -665,7 +667,11 @@
+                     name: el.attrs.get("name").cloned().unwrap_or_default(),
+                     value: el.attrs.get("value").cloned().unwrap_or_default(),
+                     placeholder: el.attrs.get("placeholder").cloned().unwrap_or_default(),
+-                    label: el.attrs.get("value").cloned().filter(|v| !v.is_empty()).unwrap_or_else(|| "Submit".into()),
++                    label: el.attrs.get("aria-label").cloned()
++                        .or_else(|| el.attrs.get("name").cloned())
++                        .or_else(|| el.attrs.get("value").cloned())
++                        .filter(|v| !v.is_empty())
++                        .unwrap_or_else(|| if matches!(kind, FormControlKind::Submit) { "Submit".into() } else { String::new() }),
+                     checked: el.attrs.contains_key("checked"),
+                 });
+                 return;
+diff -ruN '--exclude=.github' '--exclude=assets' a/src/loader.rs b/src/loader.rs
+--- a/src/loader.rs	2026-09-11 12:05:02.000000000 +0000
++++ b/src/loader.rs	2026-09-12 09:28:19.043596461 +0000
+@@ -1,5 +1,6 @@
+-use std::collections::HashSet;
++use std::collections::{HashMap, HashSet};
+ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
++use std::sync::{Arc, Mutex};
+ use std::thread;
+ use std::time::Instant;
+ 
+@@ -46,16 +47,21 @@
+ pub struct PageLoader {
+     sender: Sender<LoadResult>,
+     receiver: Receiver<LoadResult>,
++    latest: Arc<Mutex<HashMap<u64, u64>>>,
+ }
+ 
+ impl PageLoader {
+     pub fn new() -> Self {
+         let (sender, receiver) = mpsc::channel();
+-        Self { sender, receiver }
++        Self { sender, receiver, latest: Arc::new(Mutex::new(HashMap::new())) }
+     }
+ 
+     pub fn start(&self, request: LoadRequest) {
++        if let Ok(mut latest) = self.latest.lock() {
++            latest.insert(request.tab_id, request.generation);
++        }
+         let sender = self.sender.clone();
++        let latest = self.latest.clone();
+         thread::spawn(move || {
+             let started = Instant::now();
+             let mut network = PrivacyNetwork::new_with_storage(request.storage.clone());
+@@ -63,7 +69,10 @@
+                 network.blocker_mut().replace_custom_filters(request.custom_filters.clone());
+             }
+ 
+-            let result = load_document(&mut network, &request);
++            let result = load_document(&mut network, &request, &latest);
++            if !request_is_current(&latest, request.tab_id,

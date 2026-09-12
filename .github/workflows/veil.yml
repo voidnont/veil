@@ -2,72 +2,99 @@ name: Veil CI
 
 on:
   push:
-    branches: [main]
+    branches: [veil-0.8.1]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  prepare:
+  promote:
     runs-on: ubuntu-latest
     outputs:
       pending: ${{ steps.detect.outputs.pending }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
-          ref: main
+          ref: veil-0.8.1
           fetch-depth: 0
-      - name: Detect pending source update
+
+      - name: Detect staged engine update
         id: detect
         shell: bash
         run: |
-          if [ -f tools/update-0.8.1.patch ]; then
+          if compgen -G "tools/update-parts/part-*" > /dev/null; then
             echo "pending=true" >> "$GITHUB_OUTPUT"
           else
             echo "pending=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Install Linux build dependencies
+        if: steps.detect.outputs.pending == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+
       - name: Install Rust
         if: steps.detect.outputs.pending == 'true'
         uses: dtolnay/rust-toolchain@stable
-      - name: Apply source update
+
+      - name: Assemble and verify source update
         if: steps.detect.outputs.pending == 'true'
         shell: bash
         run: |
-          git apply --check tools/update-0.8.1.patch
-          git apply tools/update-0.8.1.patch
+          cat tools/update-parts/part-* > /tmp/veil-update.patch
+          echo "8a768c5ff8203f80562b61c8dea506d59ffac11a15638fb55af5fa0f31dacf98  /tmp/veil-update.patch" | sha256sum -c -
+          git apply --check /tmp/veil-update.patch
+          git apply /tmp/veil-update.patch
+
       - name: Test updated source
         if: steps.detect.outputs.pending == 'true'
         run: cargo test --all-targets
+
       - name: Build updated source
         if: steps.detect.outputs.pending == 'true'
         run: cargo build --release --bins
+
       - name: Promote tested source
         if: steps.detect.outputs.pending == 'true'
         shell: bash
         run: |
-          rm tools/update-0.8.1.patch
+          rm -rf tools/update-parts
+          rm -f tools/update-0.8.1.patch
           git add -A
           git config user.name "veil-ci"
           git config user.email "actions@users.noreply.github.com"
-          git commit -m "Veil Browser 0.8.1 runtime and UI update"
-          git push origin HEAD:main
+          git commit -m "Veil Browser 0.8.1"
+          git push origin HEAD:veil-0.8.1
 
   build:
-    needs: prepare
+    needs: promote
+    if: needs.promote.outputs.pending == 'false'
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
-          ref: main
+          ref: veil-0.8.1
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
+
       - uses: dtolnay/rust-toolchain@stable
+
       - name: Test
         run: cargo test --all-targets
+
       - name: Release build
         run: cargo build --release --bins
+
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:

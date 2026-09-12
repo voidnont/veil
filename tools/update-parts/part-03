@@ -1,0 +1,128 @@
+-                default_prevented,
+-                result,
+-            });
++            }
+         });
++
++        Self { sender: request_sender, receiver: result_receiver }
++    }
++
++    pub fn start(&self, request: RuntimeInteractionRequest) {
++        let _ = self.sender.send(request);
+     }
+ 
+     pub fn try_recv(&self) -> Option<RuntimeInteractionResult> {
+diff -ruN '--exclude=.github' '--exclude=assets' a/src/script.rs b/src/script.rs
+--- a/src/script.rs	2026-09-11 12:03:50.000000000 +0000
++++ b/src/script.rs	2026-09-12 09:29:44.369522329 +0000
+@@ -211,8 +211,9 @@
+         (default_prevented, self.snapshot(storage))
+     }
+ 
+-    pub fn tick(&mut self, _elapsed_ms: u64, storage: &ScriptStorageSnapshot) -> ScriptReport {
+-        if let Err(err) = self.context.eval(Source::from_bytes("__vvRunTimers();")) {
++    pub fn tick(&mut self, elapsed_ms: u64, storage: &ScriptStorageSnapshot) -> ScriptReport {
++        let script = format!("__vvRunTimers({elapsed_ms});");
++        if let Err(err) = self.context.eval(Source::from_bytes(script.as_str())) {
+             self.errors += 1;
+             self.last_error = Some(format!("Timer event error: {err}"));
+         }
+@@ -314,6 +315,8 @@
+ globalThis.__vvCanvasCommands = [];
+ globalThis.__vvCookieWrites = [];
+ globalThis.__vvTimers = [];
++globalThis.__vvTimerClock = 0;
++globalThis.__vvTimerId = 0;
+ globalThis.__vvDOMContentLoaded = false;
+ globalThis.__vvLoaded = false;
+ globalThis.__vvListenerCount = 0;
+@@ -466,12 +469,33 @@
+ let __vvCookie=String(__vvInitialCookie||'');
+ Object.defineProperty(document,'cookie',{get(){return __vvCookie;},set(v){v=String(v);__vvCookieWrites.push(v);const first=v.split(';')[0];const eq=first.indexOf('=');if(eq>0){const name=first.slice(0,eq).trim();const value=first.slice(eq+1).trim();const parts=__vvCookie.split(';').map(x=>x.trim()).filter(Boolean).filter(x=>!x.startsWith(name+'='));parts.push(name+'='+value);__vvCookie=parts.join('; ');}}});
+ 
+-globalThis.navigator=Object.freeze({userAgent:'Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.0 VeilEngine/0.8.0',language:'en-US',languages:Object.freeze(['en-US','en']),doNotTrack:'1',globalPrivacyControl:true,hardwareConcurrency:4});
++globalThis.navigator=Object.freeze({userAgent:'Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.1 VeilEngine/0.8.1',language:'en-US',languages:Object.freeze(['en-US','en']),doNotTrack:'1',globalPrivacyControl:true,hardwareConcurrency:4});
+ function __vvStorage(initial){const data=Object.assign(Object.create(null),initial||{});return Object.freeze({getItem(k){k=String(k);return Object.prototype.hasOwnProperty.call(data,k)?data[k]:null;},setItem(k,v){data[String(k)]=String(v);},removeItem(k){delete data[String(k)];},clear(){for(const k of Object.keys(data))delete data[k];},key(i){return Object.keys(data)[Number(i)]??null;},get length(){return Object.keys(data).length;},__dump(){return Object.assign({},data);}});}
+ globalThis.localStorage=__vvStorage(__vvInitialLocal);globalThis.sessionStorage=__vvStorage(__vvInitialSession);
+-globalThis.setTimeout=(fn,_ms=0,...args)=>{if(typeof fn==='function'&&__vvTimers.length<192){__vvTimers.push(()=>fn(...args));return __vvTimers.length;}return 0;};
+-globalThis.clearTimeout=_id=>{};globalThis.requestAnimationFrame=fn=>setTimeout(()=>fn(0),0);globalThis.cancelAnimationFrame=clearTimeout;
+-globalThis.__vvRunTimers=()=>{let guard=0;while(__vvTimers.length&&guard++<192){const fn=__vvTimers.shift();try{fn();}catch(e){__vvConsole.push('timer error: '+e);}}};
++function __vvScheduleTimer(fn,ms,interval,args){
++  if(typeof fn!=='function'||__vvTimers.length>=192)return 0;
++  const id=++__vvTimerId;const delay=Math.max(0,Number(ms)||0);
++  __vvTimers.push({id,at:__vvTimerClock+delay,interval:interval?Math.max(1,delay):0,fn,args,cancelled:false});
++  return id;
++}
++globalThis.setTimeout=(fn,ms=0,...args)=>__vvScheduleTimer(fn,ms,false,args);
++globalThis.setInterval=(fn,ms=0,...args)=>__vvScheduleTimer(fn,ms,true,args);
++globalThis.clearTimeout=id=>{for(const timer of __vvTimers)if(timer.id===Number(id))timer.cancelled=true;};
++globalThis.clearInterval=globalThis.clearTimeout;
++globalThis.requestAnimationFrame=fn=>setTimeout(()=>fn(__vvTimerClock),16);globalThis.cancelAnimationFrame=clearTimeout;
++globalThis.queueMicrotask=fn=>{if(typeof fn==='function')Promise.resolve().then(fn);};
++globalThis.performance=Object.freeze({now:()=>__vvTimerClock,timeOrigin:0});
++globalThis.__vvRunTimers=(elapsed=0)=>{
++  __vvTimerClock+=Math.max(0,Number(elapsed)||0);let guard=0;
++  __vvTimers.sort((a,b)=>a.at-b.at);
++  for(const timer of [...__vvTimers]){
++    if(guard++>=192||timer.at>__vvTimerClock)break;
++    if(timer.cancelled)continue;
++    try{timer.fn(...timer.args);}catch(e){__vvConsole.push('timer error: '+e);}
++    if(timer.interval&&!timer.cancelled)timer.at=__vvTimerClock+timer.interval;else timer.cancelled=true;
++  }
++  globalThis.__vvTimers=__vvTimers.filter(timer=>!timer.cancelled);
++};
+ 
+ globalThis.fetch=undefined;globalThis.XMLHttpRequest=undefined;globalThis.WebSocket=undefined;globalThis.EventSource=undefined;globalThis.Worker=undefined;globalThis.SharedWorker=undefined;globalThis.WebAssembly=undefined;
+ "#;
+@@ -507,4 +531,17 @@
+         assert!(report.title_override.is_none());
+         assert_eq!(report.discovered, 1);
+     }
++    #[test]
++    fn timers_respect_elapsed_time_and_intervals() {
++        let dom = Dom::parse("<script>document.title='start';setTimeout(()=>document.title='later',50);let n=0;setInterval(()=>{n++;console.log('i'+n)},20)</script>");
++        let (mut runtime, first) = LiveJavascriptRuntime::new(&dom, &[], 0, &ScriptStorageSnapshot::default());
++        assert_eq!(first.title_override.as_deref(), Some("start"));
++        let before = runtime.tick(19, &first.storage);
++        assert_eq!(before.title_override.as_deref(), Some("start"));
++        let at_twenty = runtime.tick(1, &before.storage);
++        assert!(at_twenty.console.iter().any(|line| line == "i1"));
++        let later = runtime.tick(30, &at_twenty.storage);
++        assert_eq!(later.title_override.as_deref(), Some("later"));
++    }
++
+ }
+diff -ruN '--exclude=.github' '--exclude=assets' a/src/style.rs b/src/style.rs
+--- a/src/style.rs	2026-09-11 12:03:26.00000000 +0000
++++ b/src/style.rs	2026-09-12 09:28:47.495148511 +0000
+@@ -356,11 +356,13 @@
+ 
+ fn parse_css_selector(raw: &str) -> Option<CssSelector> {
+     let raw = raw.trim();
+-    if raw.is_empty() || raw.contains('+') || raw.contains('~') || raw.contains(':') { return None; }
+-    // 0.5 treats the child combinator as a stricter-looking descendant
+-    // combinator. The matcher remains conservative but accepts far more
+-    // production stylesheets than earlier releases.
+-    let normalized = raw.replace('>', " ");
++    if raw.is_empty() || raw.contains('+') || raw.contains('~') { return None; }
++    // :root is heavily used for design tokens. Other pseudo classes/elements
++    // remain unsupported until selector matching has state awareness.
++    let root_normalized = raw.replace(":root", "html");
++    if root_normalized.contains(':') { return None; }
++    // Child combinators are conservatively treated as descendants for now.
++    let normalized = root_normalized.replace('>', " ");
+     let parts: Vec<SimpleSelector> = normalized.split_whitespace().filter_map(parse_simple_selector).collect();
+     if parts.is_empty() { None } else { Some(CssSelector { parts }) }
+ }
+@@ -463,14 +465,20 @@
+ }
+ 
+ pub fn parse_color(value: &str) -> Option<[u8; 4]> {
+-    match value.trim().to_ascii_lowercase().as_str() {
++    let normalized = value.trim().to_ascii_lowercase();
++    match normalized.as_str() {
+         "black" => Some([0,0,0,255]), "white" => Some([255,255,255,255]),
+         "gray" | "grey" => Some([128,128,128,255]), "red" => Some([255,0,0,255]),
+-        "green" => Some([0,128,0,255]), "blue" => Some([0,0,255,255]), "transparent" => Some([0,0,0,0]),
++        "green" => Some([0,128,0,255]), "blue" => Some([0,0,255,255]),
++        "

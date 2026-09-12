@@ -1,0 +1,175 @@
+ request.generation) {
++                return;
++            }
+             let blocked_count = network.blocked_count();
+             let blocked_events = network.take_blocked_events();
+             let (renderer_mode, result) = match result {
+@@ -91,9 +100,18 @@
+     }
+ }
+ 
++fn request_is_current(latest: &Arc<Mutex<HashMap<u64, u64>>>, tab_id: u64, generation: u64) -> bool {
++    latest
++        .lock()
++        .ok()
++        .and_then(|map| map.get(&tab_id).copied())
++        == Some(generation)
++}
++
+ fn load_document(
+     network: &mut PrivacyNetwork,
+     request: &LoadRequest,
++    latest: &Arc<Mutex<HashMap<u64, u64>>>,
+ ) -> Result<(DocumentView, RendererMode), String> {
+     let url = Url::parse(&request.url).map_err(|e| format!("Invalid URL: {e}"))?;
+     let response = match &request.method {
+@@ -102,6 +120,9 @@
+         NavigationMethod::PostMultipart(parts) => network.post_multipart_document(&url, request.privacy, parts.clone())?,
+     };
+     let final_url = response.final_url.clone();
++    if !request_is_current(latest, request.tab_id, request.generation) {
++        return Err("navigation superseded".into());
++    }
+ 
+     // Resource discovery remains deliberately bounded. Full HTML/CSS/JS parsing
+     // and render-tree creation happens inside veil-engine when available.
+@@ -111,6 +132,9 @@
+     let mut web_fonts = Vec::new();
+     let mut seen_fonts = HashSet::new();
+     for stylesheet in stylesheet_urls.into_iter().take(MAX_STYLESHEETS_PER_PAGE) {
++        if !request_is_current(latest, request.tab_id, request.generation) {
++            return Err("navigation superseded".into());
++        }
+         if let Ok(resource) = network.get_stylesheet(&final_url, &stylesheet, request.privacy) {
+             if web_fonts.len() < MAX_WEB_FONTS_PER_PAGE {
+                 for source in discovery.discover_web_fonts(&resource.body, &resource.final_url) {
+@@ -130,12 +154,18 @@
+     let mut external_scripts = Vec::new();
+     if request.privacy.javascript {
+         for script in script_urls.into_iter().take(MAX_SCRIPTS_PER_PAGE) {
++            if !request_is_current(latest, request.tab_id, request.generation) {
++                return Err("navigation superseded".into());
++            }
+             if let Ok(resource) = network.get_script(&final_url, &script, request.privacy) {
+                 external_scripts.push(resource.body);
+             }
+         }
+     }
+ 
++    if !request_is_current(latest, request.tab_id, request.generation) {
++        return Err("navigation superseded".into());
++    }
+     let storage_snapshot = request.storage.script_snapshot(&final_url);
+     let render_request = RenderRequest {
+         session_id: format!("tab-{}-{}", request.tab_id, request.generation),
+diff -ruN '--exclude=.github' '--exclude=assets' a/src/main.rs b/src/main.rs
+--- a/src/main.rs	2026-09-11 12:11:26.000000000 +0000
++++ b/src/main.rs	2026-09-12 09:27:57.196573477 +0000
+@@ -14,6 +14,7 @@
+ use veil_engine::media_loader::{MediaLoadRequest, MediaLoader, MediaProbe};
+ use veil_engine::net::{MultipartPart, PrivacyNetwork};
+ use veil_engine::privacy::{strip_tracking_parameters, PrivacyProfiles, SitePrivacy};
++use veil_engine::renderer_host::RendererHost;
+ use veil_engine::renderer_protocol::DomEventRequest;
+ use veil_engine::runtime_interaction::{RuntimeInteractionKind, RuntimeInteractionLoader, RuntimeInteractionRequest};
+ use veil_engine::script::CanvasCommand;
+@@ -116,7 +117,7 @@
+     visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(10);
+     visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(10);
+     visuals.widgets.active.corner_radius = egui::CornerRadius::same(10);
+-    visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(210, 118, 108, 78);
++    visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(139, 92, 246, 92);
+     ctx.set_visuals(visuals);
+     ctx.style_mut(|style| {
+         style.spacing.item_spacing = egui::vec2(8.0, 7.0);
+@@ -196,6 +197,7 @@
+     worker_blocked_count: usize,
+     show_privacy: bool,
+     sidebar_pinned: bool,
++    sidebar_width: f32,
+     active_space: usize,
+     image_cache: HashMap<String, CachedImage>,
+     media_cache: HashMap<String, CachedMedia>,
+@@ -231,6 +233,7 @@
+             worker_blocked_count: 0,
+             show_privacy: false,
+             sidebar_pinned: false,
++            sidebar_width: COLLAPSED_DOCK_WIDTH,
+             active_space: 0,
+             image_cache: HashMap::new(),
+             media_cache: HashMap::new(),
+@@ -288,10 +291,20 @@
+         self.active_space = self.tabs[index].space;
+     }
+ 
++    fn close_live_session(&self, index: usize) {
++        let Some(tab) = self.tabs.get(index) else { return; };
++        if tab.page.url == HOME { return; }
++        RendererHost::default().close_session(
++            &tab.page.url,
++            &format!("tab-{}-{}", tab.id, tab.generation),
++        );
++    }
++
+     fn close_tab(&mut self, index: usize) {
+         if index >= self.tabs.len() {
+             return;
+         }
++        self.close_live_session(index);
+         if self.tabs.len() == 1 {
+             let id = self.tabs[0].id;
+             self.tabs[0] = Tab::home(id, self.active_space);
+@@ -379,6 +392,7 @@
+         if tab_index >= self.tabs.len() {
+             return;
+         }
++        self.close_live_session(tab_index);
+         let target = self.normalize_address(&target);
+ 
+         if push_history {
+@@ -669,7 +683,15 @@
+ 
+     fn render_sidebar(&mut self, ctx: &egui::Context) {
+         let expanded = self.sidebar_expanded(ctx);
+-        let width = if expanded { EXPANDED_DOCK_WIDTH } else { COLLAPSED_DOCK_WIDTH };
++        let target_width = if expanded { EXPANDED_DOCK_WIDTH } else { COLLAPSED_DOCK_WIDTH };
++        let delta = target_width - self.sidebar_width;
++        if delta.abs() > 0.5 {
++            self.sidebar_width += delta * 0.24;
++            ctx.request_repaint();
++        } else {
++            self.sidebar_width = target_width;
++        }
++        let width = self.sidebar_width;
+         let height = (ctx.screen_rect().height() - 16.0).max(320.0);
+         let frame = self.glass_frame(0.0);
+ 
+@@ -1346,6 +1368,20 @@
+                             });
+                         }
+                     }
++                    FormControlKind::Radio => {
++                        let selected = *self.form_checks.entry(key).or_insert(control.checked);
++                        let label = if control.label.is_empty() { control.name.as_str() } else { control.label.as_str() };
++                        if ui.radio(selected, label).clicked() {
++                            for sibling in controls.iter().filter(|item| item.kind == FormControlKind::Radio && item.name == control.name) {
++                                self.form_checks.insert((tab_id, generation, sibling.node_id), sibling.node_id == control.node_id);
++                            }
++                            runtime_events.push(DomEventRequest {
++                                node_id: control.node_id,
++                                event_type: "change".into(),
++                                value: Some(control.value.clone()),
++                            });
++                        }
++                    }
+                     FormControlKind::Submit => {
+                         let label = if control.label.trim().is_empty() { "Submit" } else { control.label.as_str() };
+                         if ui.button(label).clicked() {
+@@ -1448,6 +1484,11 @@
+                     if *self.form_checks.get(&key).unwrap_or(&control.checked) {
+                         pairs.push((control.name.clone(), if control.value.is_empty() { "on".into() } else { control.value.clone() }));
+                     }
++                }
++                FormControlKind::Radio => {
++                    if *self.form_checks.get(&key).unwrap_or(&control.checked) {
++                        pairs.push((control.name.clone(), if control.value.is_empty() { "on".into() } else { control.value.clone() 

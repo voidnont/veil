@@ -1,0 +1,159 @@
+}));
++                    }
+                 }
+                 FormControlKind::File => {
+                     let path = self.form_values.get(&key).cloned().unwrap_or_default();
+diff -ruN '--exclude=.github' '--exclude=assets' a/src/net.rs b/src/net.rs
+--- a/src/net.rs	2026-09-11 12:03:26.000000000 +0000
++++ b/src/net.rs	2026-09-12 09:29:58.056906465 +0000
+@@ -73,7 +73,7 @@
+         let mut headers = HeaderMap::new();
+         headers.insert(
+             USER_AGENT,
+-            HeaderValue::from_static("Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.0 VeilEngine/0.8.0"),
++            HeaderValue::from_static("Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.1 VeilEngine/0.8.1"),
+         );
+         headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.7"));
+         headers.insert(DNT, HeaderValue::from_static("1"));
+diff -ruN '--exclude=.github' '--exclude=assets' a/src/renderer_host.rs b/src/renderer_host.rs
+--- a/src/renderer_host.rs	2026-09-11 12:04:52.000000000 +0000
++++ b/src/renderer_host.rs	2026-09-12 09:27:23.583689585 +0000
+@@ -91,7 +91,7 @@
+                 mode,
+                 default_prevented: update.default_prevented,
+             }),
+-            RendererReply::Render(_) => Err("unexpected render reply for runtime event".into()),
++            RendererReply::Render(_) | RendererReply::Closed(_) => Err("unexpected reply for runtime event".into()),
+         }
+     }
+ 
+@@ -107,22 +107,36 @@
+                 mode,
+                 default_prevented: update.default_prevented,
+             }),
+-            RendererReply::Render(_) => Err("unexpected render reply for runtime tick".into()),
++            RendererReply::Render(_) | RendererReply::Closed(_) => Err("unexpected reply for runtime tick".into()),
+         }
+     }
+ 
++
++    pub fn close_session(&self, page_url: &str, session_id: &str) {
++        let site = site_for_url(page_url);
++        let renderer = pool()
++            .lock()
++            .ok()
++            .and_then(|guard| guard.get(&site).cloned());
++        let Some(renderer) = renderer else { return; };
++        let _ = send_command(
++            &renderer,
++            &RendererCommand::Close { session_id: session_id.to_owned() },
++        );
++    }
++
+     fn render_site_process(&self, request: &RenderRequest) -> Result<(DocumentView, RendererMode), String> {
+         let renderer = self.renderer_for_url(&request.url, true)?;
+         match send_command(&renderer, &RendererCommand::Render(request.clone())) {
+             Ok((RendererReply::Render(result), mode)) => result.map(|view| (view, mode)),
+-            Ok((RendererReply::Runtime(_), _)) => Err("unexpected runtime reply for render request".into()),
++            Ok((RendererReply::Runtime(_), _)) | Ok((RendererReply::Closed(_), _)) => Err("unexpected reply for render request".into()),
+             Err(first_error) => {
+                 let site = site_for_url(&request.url);
+                 remove_site_renderer(&site);
+                 let renderer = self.renderer_for_url(&request.url, false)?;
+                 match send_command(&renderer, &RendererCommand::Render(request.clone())) {
+                     Ok((RendererReply::Render(result), mode)) => result.map(|view| (view, mode)),
+-                    Ok((RendererReply::Runtime(_), _)) => Err("unexpected runtime reply after engine restart".into()),
++                    Ok((RendererReply::Runtime(_), _)) | Ok((RendererReply::Closed(_), _)) => Err("unexpected reply after engine restart".into()),
+                     Err(second) => Err(format!("{first_error}; engine restart failed: {second}")),
+                 }
+             }
+diff -ruN '--exclude=.github' '--exclude=assets' a/src/renderer_protocol.rs b/src/renderer_protocol.rs
+--- a/src/renderer_protocol.rs	2026-09-11 12:03:26.000000000 +0000
++++ b/src/renderer_protocol.rs	2026-09-12 09:26:58.833596661 +0000
+@@ -36,6 +36,7 @@
+     Render(RenderRequest),
+     Event { session_id: String, event: DomEventRequest },
+     Tick { session_id: String, elapsed_ms: u64 },
++    Close { session_id: String },
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+@@ -43,4 +44,5 @@
+ pub enum RendererReply {
+     Render(Result<DocumentView, String>),
+     Runtime(Result<RuntimeUpdate, String>),
++    Closed(Result<(), String>),
+ }
+diff -ruN '--exclude=.github' '--exclude=assets' a/src/runtime_interaction.rs b/src/runtime_interaction.rs
+--- a/src/runtime_interaction.rs	2026-09-11 12:03:26.000000000 +0000
++++ b/src/runtime_interaction.rs	2026-09-12 09:27:10.267189541 +000
+@@ -34,45 +34,56 @@
+ }
+ 
+ pub struct RuntimeInteractionLoader {
+-    sender: Sender<RuntimeInteractionResult>,
++    sender: Sender<RuntimeInteractionRequest>,
+     receiver: Receiver<RuntimeInteractionResult>,
+ }
+ 
+ impl RuntimeInteractionLoader {
+     pub fn new() -> Self {
+-        let (sender, receiver) = mpsc::channel();
+-        Self { sender, receiver }
+-    }
++        let (request_sender, request_receiver) = mpsc::channel::<RuntimeInteractionRequest>();
++        let (result_sender, result_receiver) = mpsc::channel::<RuntimeInteractionResult>();
+ 
+-    pub fn start(&self, request: RuntimeInteractionRequest) {
+-        let sender = self.sender.clone();
+         thread::spawn(move || {
+             let host = RendererHost::default();
+-            let update = match request.kind {
+-                RuntimeInteractionKind::Event(event) => host.dispatch_event(&request.page_url, &request.session_id, event),
+-                RuntimeInteractionKind::Tick(elapsed) => host.tick(&request.page_url, &request.session_id, elapsed),
+-            };
+-            let (mode, default_prevented, result) = match update {
+-                Ok(update) => {
+-                    if let Ok(url) = Url::parse(&update.view.url) {
+-                        request.storage.apply_script_snapshot(&url, &update.view.script_report.storage);
+-                        for cookie in &update.view.script_report.cookie_writes {
+-                            request.storage.store_set_cookie(&url, &url, cookie);
++            while let Ok(request) = request_receiver.recv() {
++                let update = match request.kind {
++                    RuntimeInteractionKind::Event(event) => {
++                        host.dispatch_event(&request.page_url, &request.session_id, event)
++                    }
++                    RuntimeInteractionKind::Tick(elapsed) => {
++                        host.tick(&request.page_url, &request.session_id, elapsed)
++                    }
++                };
++                let (mode, default_prevented, result) = match update {
++                    Ok(update) => {
++                        if let Ok(url) = Url::parse(&update.view.url) {
++                            request.storage.apply_script_snapshot(&url, &update.view.script_report.storage);
++                            for cookie in &update.view.script_report.cookie_writes {
++                                request.storage.store_set_cookie(&url, &url, cookie);
++                            }
+                         }
++                        (Some(update.mode), update.default_prevented, Ok(update.view))
+                     }
+-                    (Some(update.mode), update.default_prevented, Ok(update.view))
++                    Err(error) => (None, false, Err(error)),
++                };
++                if result_sender.send(RuntimeInteractionResult {
++                    request_id: request.request_id,
++                    tab_id: request.tab_id,
++                    generation: request.generation,
++                    mode,
++                    default_prevented,
++                    result,
++                }).is_err() {
++                    break;
+                 }
+-                Err(error) => (None, false, Err(error)),
+-            };
+-            let _ = sender.send(RuntimeInteractionResult {
+-                request_id: request.request_id,
+-                tab_id: request.tab_id,
+-                generation: request.generation,
+-                mode,
