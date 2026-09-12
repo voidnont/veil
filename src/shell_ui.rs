@@ -18,12 +18,8 @@ const ACCENT: Color32 = Color32::from_rgb(150, 121, 234);
 const ACTIVE: Color32 = Color32::from_rgba_premultiplied(20, 16, 31, 34);
 const TOOLBAR_HEIGHT: f32 = 58.0;
 
-fn sidebar_progress(app: &VeilApp, ctx: &egui::Context) -> f32 {
-    ctx.animate_bool_with_time(
-        egui::Id::new("veil_sidebar_animation_v2"),
-        app.sidebar_expanded(ctx),
-        0.16,
-    )
+fn sidebar_progress(_app: &VeilApp, _ctx: &egui::Context) -> f32 {
+    1.0
 }
 
 fn sidebar_width(app: &VeilApp, ctx: &egui::Context) -> f32 {
@@ -48,7 +44,7 @@ fn workspace_glyph(index: usize) -> &'static str {
 }
 
 pub(crate) fn render_content(app: &mut VeilApp, ctx: &egui::Context) {
-    let sidebar = COLLAPSED_DOCK_WIDTH;
+    let sidebar = EXPANDED_DOCK_WIDTH + 8.0;
     egui::CentralPanel::default()
         .frame(egui::Frame::default().fill(SHELL_BG))
         .show(ctx, |ui| {
@@ -82,9 +78,8 @@ pub(crate) fn render_content(app: &mut VeilApp, ctx: &egui::Context) {
 }
 
 pub(crate) fn render_sidebar(app: &mut VeilApp, ctx: &egui::Context) {
-    let t = sidebar_progress(app, ctx);
-    let expanded = t > 0.48;
-    let width = COLLAPSED_DOCK_WIDTH + (EXPANDED_DOCK_WIDTH - COLLAPSED_DOCK_WIDTH) * t;
+    let expanded = true;
+    let width = EXPANDED_DOCK_WIDTH;
     let height = (ctx.screen_rect().height() - 16.0).max(320.0);
 
     egui::Area::new(egui::Id::new("veil_sidebar_v2"))
@@ -92,7 +87,7 @@ pub(crate) fn render_sidebar(app: &mut VeilApp, ctx: &egui::Context) {
         .fixed_pos(egui::pos2(8.0, 8.0))
         .show(ctx, |ui| {
             egui::Frame::default()
-                .fill(SIDEBAR_BG)
+                .fill(Color32::from_rgba_unmultiplied(18, 20, 28, 118))
                 .stroke(egui::Stroke::new(1.0_f32, BORDER))
                 .corner_radius(16)
                 .inner_margin(7)
@@ -131,17 +126,10 @@ pub(crate) fn render_sidebar(app: &mut VeilApp, ctx: &egui::Context) {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    let pin = if app.sidebar_pinned { "◆" } else { "◇" };
-                                    if ui
-                                        .add_sized(
-                                            [28.0, 28.0],
-                                            egui::Button::new(pin).frame(false),
-                                        )
-                                        .on_hover_text("Keep sidebar open")
-                                        .clicked()
-                                    {
-                                        app.sidebar_pinned = !app.sidebar_pinned;
-                                    }
+                                    ui.label(RichText::new("◈").size(13.0).color(
+                                        Color32::from_rgba_unmultiplied(210, 205, 235, 190),
+                                    ))
+                                    .on_hover_text("Sidebar fixed open");
                                 },
                             );
                         }
@@ -424,17 +412,36 @@ pub(crate) fn render_window_chrome(app: &mut VeilApp, ctx: &egui::Context) {
 
 pub(crate) fn render_address_pill(app: &mut VeilApp, ctx: &egui::Context) {
     let screen = ctx.screen_rect();
-    let width = (screen.width() - 180.0).clamp(420.0, 980.0);
-    let x = screen.center().x - width * 0.5;
+    let sidebar_right = 8.0 + EXPANDED_DOCK_WIDTH;
+    let content_left = sidebar_right + 16.0;
+    let controls_reserve = 154.0;
+    let content_right = (screen.right() - controls_reserve).max(content_left + 420.0);
+    let available = (content_right - content_left).max(420.0);
+    let width = (available - 24.0).clamp(420.0, 980.0).min(available);
+    let x = content_left + (available - width) * 0.5;
     let address_id = egui::Id::new("veil_address_bar");
     let focused = ctx.memory(|memory| memory.has_focus(address_id));
+
+    let top_rail_rect = egui::Rect::from_min_max(
+        egui::pos2(sidebar_right + 8.0, 8.0),
+        egui::pos2(screen.right() - 8.0, 68.0),
+    );
+    ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Middle,
+        egui::Id::new("veil_top_glass_rail"),
+    ))
+    .rect_filled(
+        top_rail_rect,
+        16.0,
+        Color32::from_rgba_unmultiplied(18, 20, 28, 104),
+    );
 
     egui::Area::new(egui::Id::new("veil_toolbar_v2"))
         .order(egui::Order::Foreground)
         .fixed_pos(egui::pos2(x, 14.0))
         .show(ctx, |ui| {
             egui::Frame::default()
-                .fill(TOOLBAR_BG)
+                .fill(Color32::from_rgba_unmultiplied(18, 20, 28, 132))
                 .stroke(egui::Stroke::new(
                     1.0_f32,
                     if focused {

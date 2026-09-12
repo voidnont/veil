@@ -49,18 +49,29 @@ impl ImageLoader {
                     .blocker_mut()
                     .replace_custom_filters(request.custom_filters.clone());
             }
-            let result = network
-                .get_image(&request.top_level, &request.url, request.privacy)
-                .and_then(|response| {
-                    let decoded = image::load_from_memory(&response.bytes)
-                        .map_err(|e| format!("Image decode failed: {e}"))?;
-                    let rgba = decoded.to_rgba8();
-                    Ok(DecodedImage {
-                        final_url: response.final_url.to_string(),
-                        size: [rgba.width() as usize, rgba.height() as usize],
-                        rgba: rgba.into_raw(),
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                network
+                    .get_image(&request.top_level, &request.url, request.privacy)
+                    .and_then(|response| {
+                        let decoded = image::load_from_memory(&response.bytes)
+                            .map_err(|e| format!("Image decode failed: {e}"))?;
+                        let width = decoded.width() as usize;
+                        let height = decoded.height() as usize;
+                        let pixels = width.checked_mul(height).ok_or_else(|| {
+                            "Image dimensions overflowed Veil's safety limit.".to_owned()
+                        })?;
+                        if pixels > 16_000_000 {
+                            return Err("Image exceeds Veil's 16 megapixel safety limit.".into());
+                        }
+                        let rgba = decoded.to_rgba8();
+                        Ok(DecodedImage {
+                            final_url: response.final_url.to_string(),
+                            size: [rgba.width() as usize, rgba.height() as usize],
+                            rgba: rgba.into_raw(),
+                        })
                     })
-                });
+            }))
+            .unwrap_or_else(|_| Err("Veil recovered from an image worker panic.".into()));
             let blocked_count = network.blocked_count();
             let blocked_events = network.take_blocked_events();
             let _ = sender.send(ImageLoadResult {

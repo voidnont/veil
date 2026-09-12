@@ -77,6 +77,19 @@ fn safe_ui_requested() -> bool {
     std::env::args().any(|arg| arg == "--safe-ui") || std::env::var_os("VEIL_SAFE_UI").is_some()
 }
 
+fn is_guarded_script_site(url: &str) -> bool {
+    Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .map(|host| {
+            host == "youtube.com"
+                || host.ends_with(".youtube.com")
+                || host == "youtu.be"
+                || host.ends_with(".youtu.be")
+        })
+        .unwrap_or(false)
+}
+
 fn install_crash_logger() {
     std::panic::set_hook(Box::new(|panic_info| {
         let message = format!("Veil Browser panic: {panic_info}\n");
@@ -261,7 +274,7 @@ impl VeilApp {
             blocked_log: VecDeque::new(),
             worker_blocked_count: 0,
             show_privacy: false,
-            sidebar_pinned: false,
+            sidebar_pinned: true,
             sidebar_hover_since: None,
             sidebar_hover_revealed: false,
             window_controls_hover_since: None,
@@ -529,10 +542,11 @@ impl VeilApp {
         if tab.page.url == HOME {
             return;
         }
-        let javascript_enabled = Url::parse(&tab.page.url)
-            .ok()
-            .map(|url| self.profiles.for_url(&url).javascript)
-            .unwrap_or(false);
+        let javascript_enabled = !is_guarded_script_site(&tab.page.url)
+            && Url::parse(&tab.page.url)
+                .ok()
+                .map(|url| self.profiles.for_url(&url).javascript)
+                .unwrap_or(false);
         if !javascript_enabled {
             return;
         }
@@ -603,10 +617,11 @@ impl VeilApp {
                 continue;
             }
             let tab = &self.tabs[index];
-            let javascript_enabled = Url::parse(&tab.page.url)
-                .ok()
-                .map(|url| self.profiles.for_url(&url).javascript)
-                .unwrap_or(false);
+            let javascript_enabled = !is_guarded_script_site(&tab.page.url)
+                && Url::parse(&tab.page.url)
+                    .ok()
+                    .map(|url| self.profiles.for_url(&url).javascript)
+                    .unwrap_or(false);
             if !javascript_enabled {
                 continue;
             }
@@ -811,7 +826,7 @@ impl VeilApp {
     }
 
     fn sidebar_expanded(&self, _ctx: &egui::Context) -> bool {
-        self.sidebar_pinned || self.sidebar_hover_revealed
+        true
     }
 
     fn render_sidebar(&mut self, ctx: &egui::Context) {

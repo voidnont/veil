@@ -1,6 +1,6 @@
 [package]
 name = "veil-browser"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2021"
 description = "Veil Browser: a privacy-first experimental desktop browser with the independent Veil Engine"
 license = "MIT"
@@ -34,4 +34,4 @@ window-vibrancy = "0.8"
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+panic = "unwind"
