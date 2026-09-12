@@ -253,7 +253,16 @@ impl Engine {
         blocker: &Blocker,
         privacy: SitePrivacy,
     ) -> DocumentView {
-        self.parse_with_resources(url, html, blocker, privacy, &[], &[], 0, &ScriptStorageSnapshot::default())
+        self.parse_with_resources(
+            url,
+            html,
+            blocker,
+            privacy,
+            &[],
+            &[],
+            0,
+            &ScriptStorageSnapshot::default(),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -269,9 +278,13 @@ impl Engine {
         storage: &ScriptStorageSnapshot,
     ) -> DocumentView {
         let original_dom = Dom::parse(html);
-        let script_report = self
-            .sandbox
-            .run(&original_dom, privacy.javascript, external_scripts, external_script_count, storage);
+        let script_report = self.sandbox.run(
+            &original_dom,
+            privacy.javascript,
+            external_scripts,
+            external_script_count,
+            storage,
+        );
         self.render_with_script_report(
             url,
             html,
@@ -383,13 +396,35 @@ impl Engine {
 fn find_icon_url(dom: &Dom, base: Option<&Url>) -> Option<String> {
     let base = base?;
     for node in &dom.nodes {
-        let NodeKind::Element(el) = &node.kind else { continue; };
-        if el.tag != "link" { continue; }
-        let rel = el.attrs.get("rel").map(|v| v.to_ascii_lowercase()).unwrap_or_default();
-        if !rel.split_whitespace().any(|token| token == "icon" || token == "shortcut") { continue; }
-        let Some(href) = el.attrs.get("href").map(String::as_str).filter(|v| !v.trim().is_empty()) else { continue; };
+        let NodeKind::Element(el) = &node.kind else {
+            continue;
+        };
+        if el.tag != "link" {
+            continue;
+        }
+        let rel = el
+            .attrs
+            .get("rel")
+            .map(|v| v.to_ascii_lowercase())
+            .unwrap_or_default();
+        if !rel
+            .split_whitespace()
+            .any(|token| token == "icon" || token == "shortcut")
+        {
+            continue;
+        }
+        let Some(href) = el
+            .attrs
+            .get("href")
+            .map(String::as_str)
+            .filter(|v| !v.trim().is_empty())
+        else {
+            continue;
+        };
         if let Ok(url) = base.join(href) {
-            if matches!(url.scheme(), "http" | "https") { return Some(url.to_string()); }
+            if matches!(url.scheme(), "http" | "https") {
+                return Some(url.to_string());
+            }
         }
     }
 
@@ -398,7 +433,11 @@ fn find_icon_url(dom: &Dom, base: Option<&Url>) -> Option<String> {
     fallback.set_path("/favicon.ico");
     fallback.set_query(None);
     fallback.set_fragment(None);
-    if !host.is_empty() { Some(fallback.to_string()) } else { None }
+    if !host.is_empty() {
+        Some(fallback.to_string())
+    } else {
+        None
+    }
 }
 
 fn apply_script_mutations(dom: &mut Dom, report: &ScriptReport) {
@@ -406,11 +445,15 @@ fn apply_script_mutations(dom: &mut Dom, report: &ScriptReport) {
         let target = if mutation.target_id == "__body__" {
             dom.find_first_tag("body")
         } else if let Some(raw) = mutation.target_id.strip_prefix("@node:n") {
-            raw.parse::<usize>().ok().filter(|idx| *idx < dom.nodes.len())
+            raw.parse::<usize>()
+                .ok()
+                .filter(|idx| *idx < dom.nodes.len())
         } else {
             dom.find_element_by_id(&mutation.target_id)
         };
-        let Some(idx) = target else { continue; };
+        let Some(idx) = target else {
+            continue;
+        };
         match mutation.kind.as_str() {
             "text" => dom.replace_text_content(idx, &mutation.value),
             "html" => dom.replace_inner_html(idx, &mutation.value),
@@ -431,16 +474,31 @@ fn apply_script_mutations(dom: &mut Dom, report: &ScriptReport) {
             _ => {}
         }
     }
-    if let Some(body) = report.body_html_override.as_ref().filter(|body| !body.trim().is_empty()) {
-        if let Some(idx) = dom.find_first_tag("body") { dom.replace_inner_html(idx, body); }
+    if let Some(body) = report
+        .body_html_override
+        .as_ref()
+        .filter(|body| !body.trim().is_empty())
+    {
+        if let Some(idx) = dom.find_first_tag("body") {
+            dom.replace_inner_html(idx, body);
+        }
     }
 }
 
 fn attach_canvas_commands(blocks: &mut [RenderBlock], commands: &[CanvasCommand]) {
     for block in blocks {
         match block {
-            RenderBlock::Canvas { id, commands: target, .. } => {
-                target.extend(commands.iter().filter(|command| command.canvas_id == *id).cloned());
+            RenderBlock::Canvas {
+                id,
+                commands: target,
+                ..
+            } => {
+                target.extend(
+                    commands
+                        .iter()
+                        .filter(|command| command.canvas_id == *id)
+                        .cloned(),
+                );
             }
             RenderBlock::Container { children, .. } => attach_canvas_commands(children, commands),
             _ => {}
@@ -449,38 +507,67 @@ fn attach_canvas_commands(blocks: &mut [RenderBlock], commands: &[CanvasCommand]
 }
 
 #[derive(Clone, Copy)]
-enum ResourceDiscovery { Stylesheet, Script }
+enum ResourceDiscovery {
+    Stylesheet,
+    Script,
+}
 
 fn discover_resources(html: &str, base: &Url, kind: ResourceDiscovery) -> Vec<Url> {
     let dom = Dom::parse(html);
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for node in &dom.nodes {
-        let NodeKind::Element(el) = &node.kind else { continue; };
+        let NodeKind::Element(el) = &node.kind else {
+            continue;
+        };
         let href = match kind {
             ResourceDiscovery::Stylesheet if el.tag == "link" => {
-                let rel = el.attrs.get("rel").map(|v| v.to_ascii_lowercase()).unwrap_or_default();
-                if !rel.split_whitespace().any(|token| token == "stylesheet") { continue; }
+                let rel = el
+                    .attrs
+                    .get("rel")
+                    .map(|v| v.to_ascii_lowercase())
+                    .unwrap_or_default();
+                if !rel.split_whitespace().any(|token| token == "stylesheet") {
+                    continue;
+                }
                 el.attrs.get("href")
             }
             ResourceDiscovery::Script if el.tag == "script" => {
-                if !script_type_is_executable(el.attrs.get("type").map(String::as_str)) { continue; }
+                if !script_type_is_executable(el.attrs.get("type").map(String::as_str)) {
+                    continue;
+                }
                 el.attrs.get("src")
             }
             _ => continue,
         };
-        let Some(href) = href.map(String::as_str).filter(|v| !v.trim().is_empty()) else { continue; };
-        let Ok(url) = base.join(href) else { continue; };
-        if !matches!(url.scheme(), "http" | "https") { continue; }
-        if seen.insert(url.to_string()) { out.push(url); }
+        let Some(href) = href.map(String::as_str).filter(|v| !v.trim().is_empty()) else {
+            continue;
+        };
+        let Ok(url) = base.join(href) else {
+            continue;
+        };
+        if !matches!(url.scheme(), "http" | "https") {
+            continue;
+        }
+        if seen.insert(url.to_string()) {
+            out.push(url);
+        }
     }
     out
 }
 
 fn script_type_is_executable(kind: Option<&str>) -> bool {
-    let Some(kind) = kind.map(str::trim).filter(|v| !v.is_empty()) else { return true; };
-    matches!(kind.to_ascii_lowercase().as_str(),
-        "text/javascript" | "application/javascript" | "application/ecmascript" | "text/ecmascript" | "module")
+    let Some(kind) = kind.map(str::trim).filter(|v| !v.is_empty()) else {
+        return true;
+    };
+    matches!(
+        kind.to_ascii_lowercase().as_str(),
+        "text/javascript"
+            | "application/javascript"
+            | "application/ecmascript"
+            | "text/ecmascript"
+            | "module"
+    )
 }
 
 fn discover_web_fonts(css: &str, base: &Url) -> Vec<WebFontSource> {
@@ -490,19 +577,27 @@ fn discover_web_fonts(css: &str, base: &Url) -> Vec<WebFontSource> {
     let mut seen = HashSet::new();
     while let Some(relative) = lower[cursor..].find("@font-face") {
         let start = cursor + relative;
-        let Some(open_rel) = lower[start..].find('{') else { break; };
+        let Some(open_rel) = lower[start..].find('{') else {
+            break;
+        };
         let open = start + open_rel + 1;
-        let Some(close_rel) = lower[open..].find('}') else { break; };
+        let Some(close_rel) = lower[open..].find('}') else {
+            break;
+        };
         let close = open + close_rel;
         let block = &css[open..close];
         let mut family = None;
         let mut source = None;
         for decl in block.split(';') {
-            let Some((name, value)) = decl.split_once(':') else { continue; };
+            let Some((name, value)) = decl.split_once(':') else {
+                continue;
+            };
             match name.trim().to_ascii_lowercase().as_str() {
                 "font-family" => {
                     let value = value.trim().trim_matches('"').trim_matches('\'');
-                    if !value.is_empty() { family = Some(value.to_owned()); }
+                    if !value.is_empty() {
+                        family = Some(value.to_owned());
+                    }
                 }
                 "src" => {
                     let lower_value = value.to_ascii_lowercase();
@@ -510,7 +605,9 @@ fn discover_web_fonts(css: &str, base: &Url) -> Vec<WebFontSource> {
                         let tail = &value[url_pos + 4..];
                         if let Some(end) = tail.find(')') {
                             let raw = tail[..end].trim().trim_matches('"').trim_matches('\'');
-                            if !raw.is_empty() && !raw.starts_with("data:") { source = Some(raw.to_owned()); }
+                            if !raw.is_empty() && !raw.starts_with("data:") {
+                                source = Some(raw.to_owned());
+                            }
                         }
                     }
                 }
@@ -545,15 +642,49 @@ fn build_children(
 
     for &child in &dom.nodes[parent_idx].children {
         match &dom.nodes[child].kind {
-            NodeKind::Text(_) => collect_runs(dom, child, parent_style, None, sheet, blocker, page_url, cosmetic_enabled, recover_visibility, hidden, &mut pending_runs),
+            NodeKind::Text(_) => collect_runs(
+                dom,
+                child,
+                parent_style,
+                None,
+                sheet,
+                blocker,
+                page_url,
+                cosmetic_enabled,
+                recover_visibility,
+                hidden,
+                &mut pending_runs,
+            ),
             NodeKind::Element(el) if is_ignored_tag(&el.tag) => {}
             NodeKind::Element(el) if is_block_tag(&el.tag) => {
                 flush_pending(&mut pending_runs, parent_style, &mut blocks);
-                if let Some(block) = build_block(dom, child, parent_style, sheet, blocker, page_url, cosmetic_enabled, recover_visibility, hidden) {
+                if let Some(block) = build_block(
+                    dom,
+                    child,
+                    parent_style,
+                    sheet,
+                    blocker,
+                    page_url,
+                    cosmetic_enabled,
+                    recover_visibility,
+                    hidden,
+                ) {
                     blocks.push(block);
                 }
             }
-            NodeKind::Element(_) => collect_runs(dom, child, parent_style, None, sheet, blocker, page_url, cosmetic_enabled, recover_visibility, hidden, &mut pending_runs),
+            NodeKind::Element(_) => collect_runs(
+                dom,
+                child,
+                parent_style,
+                None,
+                sheet,
+                blocker,
+                page_url,
+                cosmetic_enabled,
+                recover_visibility,
+                hidden,
+                &mut pending_runs,
+            ),
         }
     }
 
@@ -572,8 +703,12 @@ fn build_block(
     recover_visibility: bool,
     hidden: &mut usize,
 ) -> Option<RenderBlock> {
-    let NodeKind::Element(el) = &dom.nodes[idx].kind else { return None; };
-    if is_ignored_tag(&el.tag) { return None; }
+    let NodeKind::Element(el) = &dom.nodes[idx].kind else {
+        return None;
+    };
+    if is_ignored_tag(&el.tag) {
+        return None;
+    }
     if cosmetic_enabled {
         if let Some(url) = page_url {
             if blocker.should_hide_element(url, &el.tag, &el.attrs) {
@@ -584,23 +719,55 @@ fn build_block(
     }
 
     let mut style = sheet.compute_node(dom, idx, parent_style);
-    if recover_visibility { style.display_none = false; }
-    if style.display_none { return None; }
+    if recover_visibility {
+        style.display_none = false;
+    }
+    if style.display_none {
+        return None;
+    }
 
     match el.tag.as_str() {
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
             let mut runs = Vec::new();
-            collect_runs(dom, idx, &style, None, sheet, blocker, page_url, cosmetic_enabled, recover_visibility, hidden, &mut runs);
+            collect_runs(
+                dom,
+                idx,
+                &style,
+                None,
+                sheet,
+                blocker,
+                page_url,
+                cosmetic_enabled,
+                recover_visibility,
+                hidden,
+                &mut runs,
+            );
             compact_runs(&mut runs);
             (!runs.is_empty()).then(|| RenderBlock::Heading {
-                level: el.tag[1..].parse::<u8>().unwrap_or(2), runs, style
+                level: el.tag[1..].parse::<u8>().unwrap_or(2),
+                runs,
+                style,
             })
         }
         "p" | "blockquote" | "li" => {
             let mut runs = Vec::new();
-            collect_runs(dom, idx, &style, None, sheet, blocker, page_url, cosmetic_enabled, recover_visibility, hidden, &mut runs);
+            collect_runs(
+                dom,
+                idx,
+                &style,
+                None,
+                sheet,
+                blocker,
+                page_url,
+                cosmetic_enabled,
+                recover_visibility,
+                hidden,
+                &mut runs,
+            );
             compact_runs(&mut runs);
-            if el.tag == "li" && !runs.is_empty() { runs.insert(0, run("• ", &style, None)); }
+            if el.tag == "li" && !runs.is_empty() {
+                runs.insert(0, run("• ", &style, None));
+            }
             (!runs.is_empty()).then(|| RenderBlock::Paragraph { runs, style })
         }
         "pre" => {
@@ -610,7 +777,11 @@ fn build_block(
         "hr" => Some(RenderBlock::Rule { style }),
         "img" => {
             let src = image_source(&el.attrs)?;
-            let width = el.attrs.get("width").and_then(|v| parse_dimension(v)).or(style.width);
+            let width = el
+                .attrs
+                .get("width")
+                .and_then(|v| parse_dimension(v))
+                .or(style.width);
             let height = el.attrs.get("height").and_then(|v| parse_dimension(v));
             Some(RenderBlock::Image {
                 src,
@@ -621,15 +792,45 @@ fn build_block(
             })
         }
         "canvas" => {
-            let id = el.attrs.get("id").cloned().unwrap_or_else(|| format!("__vv_canvas_{idx}"));
-            let width = el.attrs.get("width").and_then(|v| parse_dimension(v)).or(style.width).unwrap_or(300.0).clamp(1.0, 4096.0);
-            let height = el.attrs.get("height").and_then(|v| parse_dimension(v)).or(style.height).unwrap_or(150.0).clamp(1.0, 4096.0);
-            Some(RenderBlock::Canvas { id, width, height, commands: Vec::new(), style })
+            let id = el
+                .attrs
+                .get("id")
+                .cloned()
+                .unwrap_or_else(|| format!("__vv_canvas_{idx}"));
+            let width = el
+                .attrs
+                .get("width")
+                .and_then(|v| parse_dimension(v))
+                .or(style.width)
+                .unwrap_or(300.0)
+                .clamp(1.0, 4096.0);
+            let height = el
+                .attrs
+                .get("height")
+                .and_then(|v| parse_dimension(v))
+                .or(style.height)
+                .unwrap_or(150.0)
+                .clamp(1.0, 4096.0);
+            Some(RenderBlock::Canvas {
+                id,
+                width,
+                height,
+                commands: Vec::new(),
+                style,
+            })
         }
         "video" | "audio" => {
             let src = media_source(dom, idx).unwrap_or_default();
-            let width = el.attrs.get("width").and_then(|v| parse_dimension(v)).or(style.width);
-            let height = el.attrs.get("height").and_then(|v| parse_dimension(v)).or(style.height);
+            let width = el
+                .attrs
+                .get("width")
+                .and_then(|v| parse_dimension(v))
+                .or(style.width);
+            let height = el
+                .attrs
+                .get("height")
+                .and_then(|v| parse_dimension(v))
+                .or(style.height);
             Some(RenderBlock::Media {
                 kind: el.tag.clone(),
                 src,
@@ -645,11 +846,21 @@ fn build_block(
         "form" => {
             let mut controls = Vec::new();
             collect_form_controls(dom, idx, &mut controls);
-            if controls.is_empty() { return None; }
+            if controls.is_empty() {
+                return None;
+            }
             Some(RenderBlock::Form {
                 action: el.attrs.get("action").cloned().unwrap_or_default(),
-                method: el.attrs.get("method").map(|v| v.to_ascii_lowercase()).unwrap_or_else(|| "get".into()),
-                enctype: el.attrs.get("enctype").map(|v| v.to_ascii_lowercase()).unwrap_or_else(|| "application/x-www-form-urlencoded".into()),
+                method: el
+                    .attrs
+                    .get("method")
+                    .map(|v| v.to_ascii_lowercase())
+                    .unwrap_or_else(|| "get".into()),
+                enctype: el
+                    .attrs
+                    .get("enctype")
+                    .map(|v| v.to_ascii_lowercase())
+                    .unwrap_or_else(|| "application/x-www-form-urlencoded".into()),
                 controls,
                 style,
             })
@@ -658,11 +869,25 @@ fn build_block(
             let mut controls = Vec::new();
             collect_form_controls(dom, idx, &mut controls);
             (!controls.is_empty()).then(|| RenderBlock::Form {
-                action: String::new(), method: "get".into(), enctype: "application/x-www-form-urlencoded".into(), controls, style
+                action: String::new(),
+                method: "get".into(),
+                enctype: "application/x-www-form-urlencoded".into(),
+                controls,
+                style,
             })
         }
         _ => {
-            let children = build_children(dom, idx, &style, sheet, blocker, page_url, cosmetic_enabled, recover_visibility, hidden);
+            let children = build_children(
+                dom,
+                idx,
+                &style,
+                sheet,
+                blocker,
+                page_url,
+                cosmetic_enabled,
+                recover_visibility,
+                hidden,
+            );
             (!children.is_empty()).then(|| RenderBlock::Container { children, style })
         }
     }
@@ -672,7 +897,11 @@ fn collect_form_controls(dom: &Dom, idx: usize, out: &mut Vec<FormControl>) {
     if let NodeKind::Element(el) = &dom.nodes[idx].kind {
         match el.tag.as_str() {
             "input" => {
-                let raw_type = el.attrs.get("type").map(|v| v.to_ascii_lowercase()).unwrap_or_else(|| "text".into());
+                let raw_type = el
+                    .attrs
+                    .get("type")
+                    .map(|v| v.to_ascii_lowercase())
+                    .unwrap_or_else(|| "text".into());
                 let kind = match raw_type.as_str() {
                     "search" => FormControlKind::Search,
                     "email" => FormControlKind::Email,
@@ -692,7 +921,12 @@ fn collect_form_controls(dom: &Dom, idx: usize, out: &mut Vec<FormControl>) {
                     name: el.attrs.get("name").cloned().unwrap_or_default(),
                     value: el.attrs.get("value").cloned().unwrap_or_default(),
                     placeholder: el.attrs.get("placeholder").cloned().unwrap_or_default(),
-                    label: el.attrs.get("value").cloned().filter(|v| !v.is_empty()).unwrap_or_else(|| "Submit".into()),
+                    label: el
+                        .attrs
+                        .get("value")
+                        .cloned()
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or_else(|| "Submit".into()),
                     checked: el.attrs.contains_key("checked"),
                 });
                 return;
@@ -710,10 +944,18 @@ fn collect_form_controls(dom: &Dom, idx: usize, out: &mut Vec<FormControl>) {
                 return;
             }
             "button" => {
-                let is_submit = el.attrs.get("type").map(|v| !v.eq_ignore_ascii_case("button")).unwrap_or(true);
+                let is_submit = el
+                    .attrs
+                    .get("type")
+                    .map(|v| !v.eq_ignore_ascii_case("button"))
+                    .unwrap_or(true);
                 out.push(FormControl {
                     node_id: idx,
-                    kind: if is_submit { FormControlKind::Submit } else { FormControlKind::Button },
+                    kind: if is_submit {
+                        FormControlKind::Submit
+                    } else {
+                        FormControlKind::Button
+                    },
                     name: el.attrs.get("name").cloned().unwrap_or_default(),
                     value: el.attrs.get("value").cloned().unwrap_or_default(),
                     placeholder: String::new(),
@@ -725,7 +967,9 @@ fn collect_form_controls(dom: &Dom, idx: usize, out: &mut Vec<FormControl>) {
             _ => {}
         }
     }
-    for &child in &dom.nodes[idx].children { collect_form_controls(dom, child, out); }
+    for &child in &dom.nodes[idx].children {
+        collect_form_controls(dom, child, out);
+    }
 }
 
 fn image_source(attrs: &std::collections::HashMap<String, String>) -> Option<String> {
@@ -733,18 +977,35 @@ fn image_source(attrs: &std::collections::HashMap<String, String>) -> Option<Str
         return Some(src.to_owned());
     }
     attrs.get("srcset").and_then(|set| {
-        set.split(',').next().and_then(|candidate| candidate.split_whitespace().next()).map(str::to_owned)
+        set.split(',')
+            .next()
+            .and_then(|candidate| candidate.split_whitespace().next())
+            .map(str::to_owned)
     })
 }
 
 fn media_source(dom: &Dom, idx: usize) -> Option<String> {
     if let NodeKind::Element(el) = &dom.nodes[idx].kind {
-        if let Some(src) = el.attrs.get("src").map(|s| s.trim()).filter(|s| !s.is_empty()) { return Some(src.to_owned()); }
+        if let Some(src) = el
+            .attrs
+            .get("src")
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
+            return Some(src.to_owned());
+        }
     }
     for &child in &dom.nodes[idx].children {
         if let NodeKind::Element(el) = &dom.nodes[child].kind {
             if el.tag == "source" {
-                if let Some(src) = el.attrs.get("src").map(|s| s.trim()).filter(|s| !s.is_empty()) { return Some(src.to_owned()); }
+                if let Some(src) = el
+                    .attrs
+                    .get("src")
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                {
+                    return Some(src.to_owned());
+                }
             }
         }
     }
@@ -784,30 +1045,61 @@ fn collect_runs(
         }
         NodeKind::Element(el) => {
             if is_ignored_tag(&el.tag) || (is_block_tag(&el.tag) && el.tag != "br") {
-                if !matches!(el.tag.as_str(), "p" | "li" | "blockquote" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
+                if !matches!(
+                    el.tag.as_str(),
+                    "p" | "li" | "blockquote" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6"
+                ) {
                     return;
                 }
             }
             if cosmetic_enabled {
                 if let Some(url) = page_url {
-                    if blocker.should_hide_element(url, &el.tag, &el.attrs) { *hidden += 1; return; }
+                    if blocker.should_hide_element(url, &el.tag, &el.attrs) {
+                        *hidden += 1;
+                        return;
+                    }
                 }
             }
             let mut styled = sheet.compute_node(dom, idx, inherited);
-            if recover_visibility { styled.display_none = false; }
-            if styled.display_none { return; }
+            if recover_visibility {
+                styled.display_none = false;
+            }
+            if styled.display_none {
+                return;
+            }
             if el.tag == "br" {
                 out.push(TextRun {
-                    text: "\n".into(), href: inherited_href, size: styled.font_size,
-                    bold: styled.bold, italic: styled.italic, muted: styled.muted, color: styled.color,
+                    text: "\n".into(),
+                    href: inherited_href,
+                    size: styled.font_size,
+                    bold: styled.bold,
+                    italic: styled.italic,
+                    muted: styled.muted,
+                    color: styled.color,
                     font_family: styled.font_family,
                     font_name: styled.font_name.clone(),
                 });
                 return;
             }
-            let href = if el.tag == "a" { el.attrs.get("href").cloned().or(inherited_href) } else { inherited_href };
+            let href = if el.tag == "a" {
+                el.attrs.get("href").cloned().or(inherited_href)
+            } else {
+                inherited_href
+            };
             for &child in &dom.nodes[idx].children {
-                collect_runs(dom, child, &styled, href.clone(), sheet, blocker, page_url, cosmetic_enabled, recover_visibility, hidden, out);
+                collect_runs(
+                    dom,
+                    child,
+                    &styled,
+                    href.clone(),
+                    sheet,
+                    blocker,
+                    page_url,
+                    cosmetic_enabled,
+                    recover_visibility,
+                    hidden,
+                    out,
+                );
             }
         }
     }
@@ -817,29 +1109,85 @@ fn build_compatibility_fallback(dom: &Dom, base: &ComputedStyle) -> Vec<RenderBl
     let mut runs = Vec::new();
     collect_fallback_runs(dom, dom.root, None, base, &mut runs);
     compact_runs(&mut runs);
-    if runs.is_empty() { Vec::new() } else { vec![RenderBlock::Paragraph { runs, style: base.clone() }] }
+    if runs.is_empty() {
+        Vec::new()
+    } else {
+        vec![RenderBlock::Paragraph {
+            runs,
+            style: base.clone(),
+        }]
+    }
 }
 
-fn collect_fallback_runs(dom: &Dom, idx: usize, inherited_href: Option<String>, base: &ComputedStyle, out: &mut Vec<TextRun>) {
+fn collect_fallback_runs(
+    dom: &Dom,
+    idx: usize,
+    inherited_href: Option<String>,
+    base: &ComputedStyle,
+    out: &mut Vec<TextRun>,
+) {
     match &dom.nodes[idx].kind {
         NodeKind::Text(text) => {
             let normalized = normalize_text(text);
             if !normalized.is_empty() {
-                out.push(TextRun { text: normalized, href: inherited_href, size: base.font_size, bold: false, italic: false, muted: false, color: base.color, font_family: base.font_family, font_name: base.font_name.clone() });
+                out.push(TextRun {
+                    text: normalized,
+                    href: inherited_href,
+                    size: base.font_size,
+                    bold: false,
+                    italic: false,
+                    muted: false,
+                    color: base.color,
+                    font_family: base.font_family,
+                    font_name: base.font_name.clone(),
+                });
             }
         }
         NodeKind::Element(el) => {
-            if matches!(el.tag.as_str(), "script" | "style" | "noscript" | "svg" | "head" | "template") { return; }
-            let href = if el.tag == "a" { el.attrs.get("href").cloned().or(inherited_href) } else { inherited_href };
+            if matches!(
+                el.tag.as_str(),
+                "script" | "style" | "noscript" | "svg" | "head" | "template"
+            ) {
+                return;
+            }
+            let href = if el.tag == "a" {
+                el.attrs.get("href").cloned().or(inherited_href)
+            } else {
+                inherited_href
+            };
             if el.tag == "img" {
                 if let Some(alt) = el.attrs.get("alt") {
                     let alt = normalize_text(alt);
-                    if !alt.is_empty() { out.push(TextRun { text: alt, href: href.clone(), size: base.font_size, bold: false, italic: true, muted: true, color: base.color, font_family: base.font_family, font_name: base.font_name.clone() }); }
+                    if !alt.is_empty() {
+                        out.push(TextRun {
+                            text: alt,
+                            href: href.clone(),
+                            size: base.font_size,
+                            bold: false,
+                            italic: true,
+                            muted: true,
+                            color: base.color,
+                            font_family: base.font_family,
+                            font_name: base.font_name.clone(),
+                        });
+                    }
                 }
             }
-            for &child in &dom.nodes[idx].children { collect_fallback_runs(dom, child, href.clone(), base, out); }
+            for &child in &dom.nodes[idx].children {
+                collect_fallback_runs(dom, child, href.clone(), base, out);
+            }
             if is_block_tag(&el.tag) && !out.is_empty() {
-                out.push(TextRun { text: "\n".into(), href: None, size: base.font_size, bold: false, italic: false, muted: false, color: base.color, font_family: base.font_family, font_name: base.font_name.clone() });
+                out.push(TextRun {
+                    text: "\n".into(),
+                    href: None,
+                    size: base.font_size,
+                    bold: false,
+                    italic: false,
+                    muted: false,
+                    color: base.color,
+                    font_family: base.font_family,
+                    font_name: base.font_name.clone(),
+                });
             }
         }
     }
@@ -847,52 +1195,137 @@ fn collect_fallback_runs(dom: &Dom, idx: usize, inherited_href: Option<String>, 
 
 fn flush_pending(runs: &mut Vec<TextRun>, style: &ComputedStyle, blocks: &mut Vec<RenderBlock>) {
     compact_runs(runs);
-    if !runs.is_empty() { blocks.push(RenderBlock::Paragraph { runs: std::mem::take(runs), style: style.clone() }); }
+    if !runs.is_empty() {
+        blocks.push(RenderBlock::Paragraph {
+            runs: std::mem::take(runs),
+            style: style.clone(),
+        });
+    }
 }
 
 fn compact_runs(runs: &mut Vec<TextRun>) {
     runs.retain(|run| !run.text.is_empty());
     for index in 0..runs.len().saturating_sub(1) {
-        let current_ends_ws = runs[index].text.chars().last().map(char::is_whitespace).unwrap_or(false);
-        let next_starts_ws = runs[index + 1].text.chars().next().map(char::is_whitespace).unwrap_or(false);
-        if !current_ends_ws && !next_starts_ws { runs[index].text.push(' '); }
+        let current_ends_ws = runs[index]
+            .text
+            .chars()
+            .last()
+            .map(char::is_whitespace)
+            .unwrap_or(false);
+        let next_starts_ws = runs[index + 1]
+            .text
+            .chars()
+            .next()
+            .map(char::is_whitespace)
+            .unwrap_or(false);
+        if !current_ends_ws && !next_starts_ws {
+            runs[index].text.push(' ');
+        }
     }
 }
 
 fn normalize_text(text: &str) -> String {
-    let had_leading = text.chars().next().map(char::is_whitespace).unwrap_or(false);
-    let had_trailing = text.chars().last().map(char::is_whitespace).unwrap_or(false);
+    let had_leading = text
+        .chars()
+        .next()
+        .map(char::is_whitespace)
+        .unwrap_or(false);
+    let had_trailing = text
+        .chars()
+        .last()
+        .map(char::is_whitespace)
+        .unwrap_or(false);
     let core = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if core.is_empty() { return String::new(); }
+    if core.is_empty() {
+        return String::new();
+    }
     let mut out = String::new();
-    if had_leading { out.push(' '); }
+    if had_leading {
+        out.push(' ');
+    }
     out.push_str(&core);
-    if had_trailing { out.push(' '); }
+    if had_trailing {
+        out.push(' ');
+    }
     out
 }
 
 fn is_block_tag(tag: &str) -> bool {
-    matches!(tag,
-        "html" | "body" | "main" | "article" | "section" | "div" | "nav" | "header" | "footer" | "aside" |
-        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "blockquote" | "ul" | "ol" | "li" | "pre" |
-        "hr" | "img" | "table" | "thead" | "tbody" | "tfoot" | "tr" | "td" | "th" | "figure" | "figcaption" |
-        "form" | "input" | "textarea" | "button" | "details" | "summary" | "canvas" | "video" | "audio")
+    matches!(
+        tag,
+        "html"
+            | "body"
+            | "main"
+            | "article"
+            | "section"
+            | "div"
+            | "nav"
+            | "header"
+            | "footer"
+            | "aside"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "p"
+            | "blockquote"
+            | "ul"
+            | "ol"
+            | "li"
+            | "pre"
+            | "hr"
+            | "img"
+            | "table"
+            | "thead"
+            | "tbody"
+            | "tfoot"
+            | "tr"
+            | "td"
+            | "th"
+            | "figure"
+            | "figcaption"
+            | "form"
+            | "input"
+            | "textarea"
+            | "button"
+            | "details"
+            | "summary"
+            | "canvas"
+            | "video"
+            | "audio"
+    )
 }
 
 fn is_ignored_tag(tag: &str) -> bool {
-    matches!(tag, "script" | "style" | "noscript" | "svg" | "head" | "template")
+    matches!(
+        tag,
+        "script" | "style" | "noscript" | "svg" | "head" | "template"
+    )
 }
 
 fn parse_dimension(value: &str) -> Option<f32> {
-    value.trim().trim_end_matches("px").parse::<f32>().ok().map(|v| v.clamp(1.0, 4096.0))
+    value
+        .trim()
+        .trim_end_matches("px")
+        .parse::<f32>()
+        .ok()
+        .map(|v| v.clamp(1.0, 4096.0))
 }
 
 fn find_title(dom: &Dom) -> Option<String> {
     for (idx, node) in dom.nodes.iter().enumerate() {
         if let NodeKind::Element(el) = &node.kind {
             if el.tag == "title" {
-                let text = dom.text_content(idx).split_whitespace().collect::<Vec<_>>().join(" ");
-                if !text.is_empty() { return Some(text); }
+                let text = dom
+                    .text_content(idx)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !text.is_empty() {
+                    return Some(text);
+                }
             }
         }
     }
@@ -900,7 +1333,17 @@ fn find_title(dom: &Dom) -> Option<String> {
 }
 
 fn run(text: &str, style: &ComputedStyle, href: Option<String>) -> TextRun {
-    TextRun { text: text.to_owned(), href, size: style.font_size, bold: style.bold, italic: style.italic, muted: style.muted, color: style.color, font_family: style.font_family, font_name: style.font_name.clone() }
+    TextRun {
+        text: text.to_owned(),
+        href,
+        size: style.font_size,
+        bold: style.bold,
+        italic: style.italic,
+        muted: style.muted,
+        color: style.color,
+        font_family: style.font_family,
+        font_name: style.font_name.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -928,15 +1371,24 @@ mod tests {
         let engine = Engine::default();
         let base = Url::parse("https://example.com/path/").unwrap();
         let html = "<link rel='stylesheet' href='/app.css'><script src='app.js'></script>";
-        assert_eq!(engine.discover_stylesheets(html, &base)[0].as_str(), "https://example.com/app.css");
-        assert_eq!(engine.discover_external_scripts(html, &base)[0].as_str(), "https://example.com/path/app.js");
+        assert_eq!(
+            engine.discover_stylesheets(html, &base)[0].as_str(),
+            "https://example.com/app.css"
+        );
+        assert_eq!(
+            engine.discover_external_scripts(html, &base)[0].as_str(),
+            "https://example.com/path/app.js"
+        );
     }
 
     #[test]
     fn discovers_font_face_resources() {
         let engine = Engine::default();
         let base = Url::parse("https://example.com/css/app.css").unwrap();
-        let fonts = engine.discover_web_fonts("@font-face{font-family:'Veil Sans';src:url('../fonts/vv.ttf') format('truetype')}", &base);
+        let fonts = engine.discover_web_fonts(
+            "@font-face{font-family:'Veil Sans';src:url('../fonts/vv.ttf') format('truetype')}",
+            &base,
+        );
         assert_eq!(fonts.len(), 1);
         assert_eq!(fonts[0].family, "Veil Sans");
         assert_eq!(fonts[0].url.as_str(), "https://example.com/fonts/vv.ttf");
@@ -952,7 +1404,10 @@ mod tests {
             &blocker,
             SitePrivacy::default(),
         );
-        assert!(matches!(view.blocks.first(), Some(RenderBlock::Container { .. }) | Some(RenderBlock::Form { .. })));
+        assert!(matches!(
+            view.blocks.first(),
+            Some(RenderBlock::Container { .. }) | Some(RenderBlock::Form { .. })
+        ));
         assert!(format!("{:?}", view.blocks).contains("Search"));
     }
 }

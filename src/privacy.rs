@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use url::Url;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,13 +108,17 @@ pub fn strip_tracking_parameters(mut url: Url) -> Url {
     url
 }
 
-
 pub fn site_key_for_url(url: &Url) -> String {
-    url.host_str().map(|host| site_key(&host.to_ascii_lowercase())).unwrap_or_default()
+    url.host_str()
+        .map(|host| site_key(&host.to_ascii_lowercase()))
+        .unwrap_or_default()
 }
 
 pub fn is_third_party(top_level: &Url, request: &Url) -> bool {
-    let top = top_level.host_str().unwrap_or_default().to_ascii_lowercase();
+    let top = top_level
+        .host_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let req = request.host_str().unwrap_or_default().to_ascii_lowercase();
     if top.is_empty() || req.is_empty() {
         return false;
@@ -134,8 +138,8 @@ pub fn site_key(host: &str) -> String {
 
     let last_two = format!("{}.{}", labels[labels.len() - 2], labels[labels.len() - 1]);
     let common_two_level_suffixes = [
-        "co.uk", "org.uk", "ac.uk", "com.au", "net.au", "org.au", "co.nz",
-        "co.jp", "ne.jp", "com.br", "com.cn", "com.sg", "com.tr", "co.in",
+        "co.uk", "org.uk", "ac.uk", "com.au", "net.au", "org.au", "co.nz", "co.jp", "ne.jp",
+        "com.br", "com.cn", "com.sg", "com.tr", "co.in",
     ];
 
     if common_two_level_suffixes.contains(&last_two.as_str()) && labels.len() >= 3 {

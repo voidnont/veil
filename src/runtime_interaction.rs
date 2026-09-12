@@ -49,13 +49,19 @@ impl RuntimeInteractionLoader {
         thread::spawn(move || {
             let host = RendererHost::default();
             let update = match request.kind {
-                RuntimeInteractionKind::Event(event) => host.dispatch_event(&request.page_url, &request.session_id, event),
-                RuntimeInteractionKind::Tick(elapsed) => host.tick(&request.page_url, &request.session_id, elapsed),
+                RuntimeInteractionKind::Event(event) => {
+                    host.dispatch_event(&request.page_url, &request.session_id, event)
+                }
+                RuntimeInteractionKind::Tick(elapsed) => {
+                    host.tick(&request.page_url, &request.session_id, elapsed)
+                }
             };
             let (mode, default_prevented, result) = match update {
                 Ok(update) => {
                     if let Ok(url) = Url::parse(&update.view.url) {
-                        request.storage.apply_script_snapshot(&url, &update.view.script_report.storage);
+                        request
+                            .storage
+                            .apply_script_snapshot(&url, &update.view.script_report.storage);
                         for cookie in &update.view.script_report.cookie_writes {
                             request.storage.store_set_cookie(&url, &url, cookie);
                         }

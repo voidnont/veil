@@ -45,7 +45,9 @@ impl ImageLoader {
         thread::spawn(move || {
             let mut network = PrivacyNetwork::new_with_storage(request.storage.clone());
             if !request.custom_filters.trim().is_empty() {
-                network.blocker_mut().replace_custom_filters(request.custom_filters.clone());
+                network
+                    .blocker_mut()
+                    .replace_custom_filters(request.custom_filters.clone());
             }
             let result = network
                 .get_image(&request.top_level, &request.url, request.privacy)

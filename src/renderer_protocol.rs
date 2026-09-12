@@ -34,8 +34,14 @@ pub struct RuntimeUpdate {
 #[serde(tag = "command", content = "payload")]
 pub enum RendererCommand {
     Render(RenderRequest),
-    Event { session_id: String, event: DomEventRequest },
-    Tick { session_id: String, elapsed_ms: u64 },
+    Event {
+        session_id: String,
+        event: DomEventRequest,
+    },
+    Tick {
+        session_id: String,
+        elapsed_ms: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

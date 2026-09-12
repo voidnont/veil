@@ -28,7 +28,10 @@ pub struct Dom {
 impl Dom {
     pub fn parse(html: &str) -> Self {
         let mut nodes = vec![Node {
-            kind: NodeKind::Element(ElementData { tag: "document".into(), attrs: HashMap::new() }),
+            kind: NodeKind::Element(ElementData {
+                tag: "document".into(),
+                attrs: HashMap::new(),
+            }),
             children: Vec::new(),
             parent: None,
         }];
@@ -40,24 +43,40 @@ impl Dom {
         while i < bytes.len() {
             if bytes[i] == b'<' {
                 if html[i..].starts_with("<!--") {
-                    if let Some(end) = html[i + 4..].find("-->") { i += 4 + end + 3; } else { break; }
+                    if let Some(end) = html[i + 4..].find("-->") {
+                        i += 4 + end + 3;
+                    } else {
+                        break;
+                    }
                     continue;
                 }
                 if html[i..].starts_with("<!") {
-                    if let Some(end) = html[i..].find('>') { i += end + 1; } else { break; }
+                    if let Some(end) = html[i..].find('>') {
+                        i += end + 1;
+                    } else {
+                        break;
+                    }
                     continue;
                 }
-                let Some(end_rel) = html[i..].find('>') else { break; };
+                let Some(end_rel) = html[i..].find('>') else {
+                    break;
+                };
                 let end = i + end_rel;
                 let inside = html[i + 1..end].trim();
                 if inside.starts_with('/') {
-                    let closing = inside[1..].split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+                    let closing = inside[1..]
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .to_ascii_lowercase();
                     if let Some(pos) = stack.iter().rposition(|idx| match &nodes[*idx].kind {
                         NodeKind::Element(el) => el.tag == closing,
                         NodeKind::Text(_) => false,
                     }) {
                         stack.truncate(pos);
-                        if stack.is_empty() { stack.push(root); }
+                        if stack.is_empty() {
+                            stack.push(root);
+                        }
                     }
                 } else {
                     let self_closing = inside.ends_with('/');
@@ -66,8 +85,17 @@ impl Dom {
                     if !tag.is_empty() {
                         let idx = nodes.len();
                         let parent = stack.last().copied();
-                        nodes.push(Node { kind: NodeKind::Element(ElementData { tag: tag.clone(), attrs }), children: Vec::new(), parent });
-                        if let Some(parent) = parent { nodes[parent].children.push(idx); }
+                        nodes.push(Node {
+                            kind: NodeKind::Element(ElementData {
+                                tag: tag.clone(),
+                                attrs,
+                            }),
+                            children: Vec::new(),
+                            parent,
+                        });
+                        if let Some(parent) = parent {
+                            nodes[parent].children.push(idx);
+                        }
 
                         if !self_closing && matches!(tag.as_str(), "script" | "style") {
                             let after_start = end + 1;
@@ -78,7 +106,11 @@ impl Dom {
                                 let raw_text = &tail[..close_rel];
                                 if !raw_text.is_empty() {
                                     let text_idx = nodes.len();
-                                    nodes.push(Node { kind: NodeKind::Text(raw_text.to_owned()), children: Vec::new(), parent: Some(idx) });
+                                    nodes.push(Node {
+                                        kind: NodeKind::Text(raw_text.to_owned()),
+                                        children: Vec::new(),
+                                        parent: Some(idx),
+                                    });
                                     nodes[idx].children.push(text_idx);
                                 }
                                 i = after_start + close_rel + closing.len();
@@ -86,7 +118,9 @@ impl Dom {
                             }
                         }
 
-                        if !self_closing && !is_void(&tag) { stack.push(idx); }
+                        if !self_closing && !is_void(&tag) {
+                            stack.push(idx);
+                        }
                     }
                 }
                 i = end + 1;
@@ -96,8 +130,14 @@ impl Dom {
                 if !text.trim().is_empty() {
                     let idx = nodes.len();
                     let parent = stack.last().copied();
-                    nodes.push(Node { kind: NodeKind::Text(text), children: Vec::new(), parent });
-                    if let Some(parent) = parent { nodes[parent].children.push(idx); }
+                    nodes.push(Node {
+                        kind: NodeKind::Text(text),
+                        children: Vec::new(),
+                        parent,
+                    });
+                    if let Some(parent) = parent {
+                        nodes[parent].children.push(idx);
+                    }
                 }
                 i = end;
             }
@@ -114,7 +154,15 @@ impl Dom {
                 let mut out = String::new();
                 for &child in &node.children {
                     let part = self.text_content(child);
-                    if !out.is_empty() && !part.chars().next().map(|c| c.is_whitespace()).unwrap_or(false) { out.push(' '); }
+                    if !out.is_empty()
+                        && !part
+                            .chars()
+                            .next()
+                            .map(|c| c.is_whitespace())
+                            .unwrap_or(false)
+                    {
+                        out.push(' ');
+                    }
                     out.push_str(&part);
                 }
                 out
@@ -123,30 +171,48 @@ impl Dom {
     }
 
     pub fn find_element_by_id(&self, id: &str) -> Option<usize> {
-        self.nodes.iter().enumerate().find_map(|(idx, node)| match &node.kind {
-            NodeKind::Element(el) if el.attrs.get("id").map(String::as_str) == Some(id) => Some(idx),
-            _ => None,
-        })
+        self.nodes
+            .iter()
+            .enumerate()
+            .find_map(|(idx, node)| match &node.kind {
+                NodeKind::Element(el) if el.attrs.get("id").map(String::as_str) == Some(id) => {
+                    Some(idx)
+                }
+                _ => None,
+            })
     }
 
     pub fn find_first_tag(&self, tag: &str) -> Option<usize> {
-        self.nodes.iter().enumerate().find_map(|(idx, node)| match &node.kind {
-            NodeKind::Element(el) if el.tag.eq_ignore_ascii_case(tag) => Some(idx),
-            _ => None,
-        })
+        self.nodes
+            .iter()
+            .enumerate()
+            .find_map(|(idx, node)| match &node.kind {
+                NodeKind::Element(el) if el.tag.eq_ignore_ascii_case(tag) => Some(idx),
+                _ => None,
+            })
     }
 
     pub fn replace_text_content(&mut self, idx: usize, text: &str) {
-        if idx >= self.nodes.len() { return; }
+        if idx >= self.nodes.len() {
+            return;
+        }
         self.nodes[idx].children.clear();
-        if text.is_empty() { return; }
+        if text.is_empty() {
+            return;
+        }
         let text_idx = self.nodes.len();
-        self.nodes.push(Node { kind: NodeKind::Text(text.to_owned()), children: Vec::new(), parent: Some(idx) });
+        self.nodes.push(Node {
+            kind: NodeKind::Text(text.to_owned()),
+            children: Vec::new(),
+            parent: Some(idx),
+        });
         self.nodes[idx].children.push(text_idx);
     }
 
     pub fn replace_inner_html(&mut self, idx: usize, html: &str) {
-        if idx >= self.nodes.len() { return; }
+        if idx >= self.nodes.len() {
+            return;
+        }
         let fragment = Dom::parse(html);
         self.nodes[idx].children.clear();
         let roots = fragment.nodes[fragment.root].children.clone();
@@ -157,7 +223,9 @@ impl Dom {
     }
 
     pub fn append_inner_html(&mut self, idx: usize, html: &str, prepend: bool) {
-        if idx >= self.nodes.len() { return; }
+        if idx >= self.nodes.len() {
+            return;
+        }
         let fragment = Dom::parse(html);
         let roots = fragment.nodes[fragment.root].children.clone();
         let mut added = Vec::new();
@@ -173,34 +241,61 @@ impl Dom {
     }
 
     pub fn set_attribute(&mut self, idx: usize, name: &str, value: &str) {
-        if let Some(Node { kind: NodeKind::Element(el), .. }) = self.nodes.get_mut(idx) {
+        if let Some(Node {
+            kind: NodeKind::Element(el),
+            ..
+        }) = self.nodes.get_mut(idx)
+        {
             el.attrs.insert(name.to_ascii_lowercase(), value.to_owned());
         }
     }
 
     pub fn remove_attribute(&mut self, idx: usize, name: &str) {
-        if let Some(Node { kind: NodeKind::Element(el), .. }) = self.nodes.get_mut(idx) {
+        if let Some(Node {
+            kind: NodeKind::Element(el),
+            ..
+        }) = self.nodes.get_mut(idx)
+        {
             el.attrs.remove(&name.to_ascii_lowercase());
         }
     }
 
     pub fn set_style_property(&mut self, idx: usize, name: &str, value: &str) {
-        let Some(Node { kind: NodeKind::Element(el), .. }) = self.nodes.get_mut(idx) else { return; };
-        let mut declarations: Vec<(String, String)> = el.attrs.get("style")
-            .map(|style| style.split(';').filter_map(|decl| {
-                let (key, value) = decl.split_once(':')?;
-                Some((key.trim().to_ascii_lowercase(), value.trim().to_owned()))
-            }).collect())
+        let Some(Node {
+            kind: NodeKind::Element(el),
+            ..
+        }) = self.nodes.get_mut(idx)
+        else {
+            return;
+        };
+        let mut declarations: Vec<(String, String)> = el
+            .attrs
+            .get("style")
+            .map(|style| {
+                style
+                    .split(';')
+                    .filter_map(|decl| {
+                        let (key, value) = decl.split_once(':')?;
+                        Some((key.trim().to_ascii_lowercase(), value.trim().to_owned()))
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
         let name = name.trim().to_ascii_lowercase();
         declarations.retain(|(key, _)| key != &name);
         declarations.push((name, value.trim().to_owned()));
-        let serialized = declarations.into_iter().map(|(key, value)| format!("{key}:{value}")).collect::<Vec<_>>().join(";");
+        let serialized = declarations
+            .into_iter()
+            .map(|(key, value)| format!("{key}:{value}"))
+            .collect::<Vec<_>>()
+            .join(";");
         el.attrs.insert("style".into(), serialized);
     }
 
     pub fn remove_node(&mut self, idx: usize) {
-        if idx == self.root || idx >= self.nodes.len() { return; }
+        if idx == self.root || idx >= self.nodes.len() {
+            return;
+        }
         let parent = self.nodes[idx].parent;
         if let Some(parent) = parent {
             self.nodes[parent].children.retain(|child| *child != idx);
@@ -228,7 +323,10 @@ fn parse_tag(content: &str) -> (String, HashMap<String, String>) {
     let mut chars = content.char_indices().peekable();
     let mut tag_end = content.len();
     while let Some((idx, ch)) = chars.next() {
-        if ch.is_whitespace() { tag_end = idx; break; }
+        if ch.is_whitespace() {
+            tag_end = idx;
+            break;
+        }
     }
     let tag = content[..tag_end].to_ascii_lowercase();
     let mut attrs = HashMap::new();
@@ -237,35 +335,70 @@ fn parse_tag(content: &str) -> (String, HashMap<String, String>) {
     let rb = rest.as_bytes();
 
     while pos < rb.len() {
-        while pos < rb.len() && rb[pos].is_ascii_whitespace() { pos += 1; }
-        if pos >= rb.len() { break; }
+        while pos < rb.len() && rb[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+        if pos >= rb.len() {
+            break;
+        }
         let key_start = pos;
-        while pos < rb.len() && !rb[pos].is_ascii_whitespace() && rb[pos] != b'=' { pos += 1; }
+        while pos < rb.len() && !rb[pos].is_ascii_whitespace() && rb[pos] != b'=' {
+            pos += 1;
+        }
         let key = rest[key_start..pos].to_ascii_lowercase();
-        while pos < rb.len() && rb[pos].is_ascii_whitespace() { pos += 1; }
+        while pos < rb.len() && rb[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
         let mut value = String::new();
         if pos < rb.len() && rb[pos] == b'=' {
             pos += 1;
-            while pos < rb.len() && rb[pos].is_ascii_whitespace() { pos += 1; }
+            while pos < rb.len() && rb[pos].is_ascii_whitespace() {
+                pos += 1;
+            }
             if pos < rb.len() && (rb[pos] == b'\'' || rb[pos] == b'\"') {
-                let quote = rb[pos]; pos += 1; let start = pos;
-                while pos < rb.len() && rb[pos] != quote { pos += 1; }
+                let quote = rb[pos];
+                pos += 1;
+                let start = pos;
+                while pos < rb.len() && rb[pos] != quote {
+                    pos += 1;
+                }
                 value = rest[start..pos].to_owned();
-                if pos < rb.len() { pos += 1; }
+                if pos < rb.len() {
+                    pos += 1;
+                }
             } else {
                 let start = pos;
-                while pos < rb.len() && !rb[pos].is_ascii_whitespace() { pos += 1; }
+                while pos < rb.len() && !rb[pos].is_ascii_whitespace() {
+                    pos += 1;
+                }
                 value = rest[start..pos].to_owned();
             }
         }
-        if !key.is_empty() { attrs.insert(key, decode_entities(&value)); }
+        if !key.is_empty() {
+            attrs.insert(key, decode_entities(&value));
+        }
     }
 
     (tag, attrs)
 }
 
 fn is_void(tag: &str) -> bool {
-    matches!(tag, "area" | "base" | "br" | "col" | "embed" | "hr" | "img" | "input" | "link" | "meta" | "source" | "track" | "wbr")
+    matches!(
+        tag,
+        "area"
+            | "base"
+            | "br"
+            | "col"
+            | "embed"
+            | "hr"
+            | "img"
+            | "input"
+            | "link"
+            | "meta"
+            | "source"
+            | "track"
+            | "wbr"
+    )
 }
 
 fn decode_entities(s: &str) -> String {

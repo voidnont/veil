@@ -1,6 +1,6 @@
-use std::collections::{HashMap, VecDeque};
-use std::hash::{Hash, Hasher};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
+use std::hash::{Hash, Hasher};
 use std::io::Write as IoWrite;
 use std::path::Path;
 use std::sync::Arc;
@@ -8,14 +8,18 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align2, Color32, FontId, RichText, ScrollArea, Sense, TextureHandle};
 use url::Url;
-use veil_engine::engine::{DocumentView, FormControl, FormControlKind, RenderBlock, TextRun, WebFontResource};
+use veil_engine::engine::{
+    DocumentView, FormControl, FormControlKind, RenderBlock, TextRun, WebFontResource,
+};
 use veil_engine::image_loader::{ImageLoadRequest, ImageLoader};
 use veil_engine::loader::{LoadRequest, NavigationMethod, PageLoader};
 use veil_engine::media_loader::{MediaLoadRequest, MediaLoader, MediaProbe};
 use veil_engine::net::{MultipartPart, PrivacyNetwork};
 use veil_engine::privacy::{strip_tracking_parameters, PrivacyProfiles, SitePrivacy};
 use veil_engine::renderer_protocol::DomEventRequest;
-use veil_engine::runtime_interaction::{RuntimeInteractionKind, RuntimeInteractionLoader, RuntimeInteractionRequest};
+use veil_engine::runtime_interaction::{
+    RuntimeInteractionKind, RuntimeInteractionLoader, RuntimeInteractionRequest,
+};
 use veil_engine::script::CanvasCommand;
 use veil_engine::storage::SharedBrowserStorage;
 use veil_engine::style::{ComputedStyle, FontKind, JustifyContent, LayoutMode, TextAlign};
@@ -26,6 +30,8 @@ const HOME: &str = "veil://home";
 const DEFAULT_GLASS_TRANSPARENCY: f32 = 0.12;
 const COLLAPSED_DOCK_WIDTH: f32 = 54.0;
 const EXPANDED_DOCK_WIDTH: f32 = 260.0;
+const HOVER_REVEAL_DELAY: Duration = Duration::from_secs(1);
+const MAX_IMAGE_LOADS: usize = 6;
 
 fn main() {
     install_crash_logger();
@@ -34,7 +40,8 @@ fn main() {
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1360.0, 860.0])
         .with_min_inner_size([820.0, 560.0])
-        .with_transparent(!safe_ui);
+        .with_transparent(!safe_ui)
+        .with_decorations(false);
     if let Some(icon) = load_native_icon() {
         viewport = viewport.with_icon(icon);
     }
@@ -48,6 +55,12 @@ fn main() {
         options,
         Box::new(|cc| {
             configure_visuals(&cc.egui_ctx);
+            #[cfg(target_os = "windows")]
+            if !safe_ui {
+                if window_vibrancy::apply_acrylic(cc, Some((18, 18, 24, 118))).is_err() {
+                    let _ = window_vibrancy::apply_blur(cc, Some((18, 18, 24, 118)));
+                }
+            }
             Ok(Box::new(VeilApp::new(&cc.egui_ctx)))
         }),
     );
@@ -61,8 +74,7 @@ fn main() {
 }
 
 fn safe_ui_requested() -> bool {
-    std::env::args().any(|arg| arg == "--safe-ui")
-        || std::env::var_os("VEIL_SAFE_UI").is_some()
+    std::env::args().any(|arg| arg == "--safe-ui") || std::env::var_os("VEIL_SAFE_UI").is_some()
 }
 
 fn install_crash_logger() {
@@ -83,9 +95,10 @@ fn log_startup_error(message: &str) {
     }
 }
 
-
 fn initial_glass_transparency() -> f32 {
-    if safe_ui_requested() { return 0.0; }
+    if safe_ui_requested() {
+        return 0.0;
+    }
     if std::env::var_os("VEIL_DISABLE_TRANSPARENCY").is_some() {
         return 0.0;
     }
@@ -96,19 +109,24 @@ fn initial_glass_transparency() -> f32 {
         .unwrap_or(DEFAULT_GLASS_TRANSPARENCY)
 }
 
-
 fn load_native_icon() -> Option<egui::IconData> {
-    let image = image::load_from_memory(include_bytes!("../assets/veil-glass-icon.png")).ok()?.to_rgba8();
+    let image = image::load_from_memory(include_bytes!("../assets/veil-glass-icon.png"))
+        .ok()?
+        .to_rgba8();
     let width = image.width();
     let height = image.height();
-    Some(egui::IconData { rgba: image.into_raw(), width, height })
+    Some(egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    })
 }
 
 fn configure_visuals(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = Color32::from_rgba_unmultiplied(20, 21, 24, 246);
-    visuals.window_fill = Color32::from_rgba_unmultiplied(24, 25, 29, 232);
-    visuals.extreme_bg_color = Color32::from_rgba_unmultiplied(16, 17, 20, 240);
+    visuals.panel_fill = Color32::from_rgba_unmultiplied(16, 17, 22, 118);
+    visuals.window_fill = Color32::from_rgba_unmultiplied(18, 19, 25, 132);
+    visuals.extreme_bg_color = Color32::from_rgba_unmultiplied(10, 11, 15, 96);
     visuals.faint_bg_color = Color32::from_rgba_unmultiplied(255, 255, 255, 12);
     visuals.widgets.noninteractive.bg_fill = Color32::from_rgba_unmultiplied(255, 255, 255, 10);
     visuals.widgets.inactive.bg_fill = Color32::from_rgba_unmultiplied(255, 255, 255, 13);
@@ -169,7 +187,10 @@ impl Tab {
 #[derive(Clone)]
 enum CachedImage {
     Loading,
-    Ready { texture: TextureHandle, size: [usize; 2] },
+    Ready {
+        texture: TextureHandle,
+        size: [usize; 2],
+    },
     Failed(String),
 }
 
@@ -192,14 +213,21 @@ struct VeilApp {
     runtime_loader: RuntimeInteractionLoader,
     next_runtime_request_id: u64,
     last_runtime_tick: Instant,
+    runtime_inflight: HashSet<u64>,
     storage: SharedBrowserStorage,
     profiles: PrivacyProfiles,
     blocked_log: VecDeque<String>,
     worker_blocked_count: usize,
     show_privacy: bool,
     sidebar_pinned: bool,
+    sidebar_hover_since: Option<Instant>,
+    sidebar_hover_revealed: bool,
+    window_controls_hover_since: Option<Instant>,
+    window_controls_revealed: bool,
     active_space: usize,
     image_cache: HashMap<String, CachedImage>,
+    image_load_queue: VecDeque<ImageLoadRequest>,
+    image_loads_inflight: usize,
     media_cache: HashMap<String, CachedMedia>,
     web_font_registry: HashMap<String, Vec<u8>>,
     custom_filters: String,
@@ -227,14 +255,21 @@ impl VeilApp {
             runtime_loader: RuntimeInteractionLoader::new(),
             next_runtime_request_id: 1,
             last_runtime_tick: Instant::now(),
+            runtime_inflight: HashSet::new(),
             storage,
             profiles: PrivacyProfiles::new(),
             blocked_log: VecDeque::new(),
             worker_blocked_count: 0,
             show_privacy: false,
             sidebar_pinned: false,
+            sidebar_hover_since: None,
+            sidebar_hover_revealed: false,
+            window_controls_hover_since: None,
+            window_controls_revealed: false,
             active_space: 0,
             image_cache: HashMap::new(),
+            image_load_queue: VecDeque::new(),
+            image_loads_inflight: 0,
             media_cache: HashMap::new(),
             web_font_registry: HashMap::new(),
             custom_filters,
@@ -253,8 +288,16 @@ impl VeilApp {
 
     fn glass_frame(&self, extra_opacity: f32) -> egui::Frame {
         egui::Frame::default()
-            .fill(Color32::from_rgba_unmultiplied(20, 20, 26, self.glass_alpha(extra_opacity)))
-            .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 24)))
+            .fill(Color32::from_rgba_unmultiplied(
+                20,
+                20,
+                26,
+                self.glass_alpha(extra_opacity),
+            ))
+            .stroke(egui::Stroke::new(
+                1.0_f32,
+                Color32::from_rgba_unmultiplied(255, 255, 255, 24),
+            ))
             .corner_radius(14)
             .inner_margin(6)
     }
@@ -267,7 +310,9 @@ impl VeilApp {
     }
 
     fn switch_space(&mut self, space: usize) {
-        if self.active_space == space { return; }
+        if self.active_space == space {
+            return;
+        }
         self.active_space = space;
         self.split_tab_id = None;
         if let Some(index) = self.tabs.iter().position(|tab| tab.space == space) {
@@ -336,7 +381,9 @@ impl VeilApp {
 
     fn split_tab_index(&self) -> Option<usize> {
         let id = self.split_tab_id?;
-        self.tabs.iter().position(|tab| tab.id == id && tab.id != self.tabs[self.active_tab].id)
+        self.tabs
+            .iter()
+            .position(|tab| tab.id == id && tab.id != self.tabs[self.active_tab].id)
     }
 
     fn normalize_address(&self, input: &str) -> String {
@@ -386,7 +433,9 @@ impl VeilApp {
         if push_history {
             let current = self.tabs[tab_index].page.url.clone();
             if current != target {
-                self.tabs[tab_index].back.push(HistoryEntry { url: current });
+                self.tabs[tab_index]
+                    .back
+                    .push(HistoryEntry { url: current });
                 self.tabs[tab_index].forward.clear();
             }
         }
@@ -473,17 +522,27 @@ impl VeilApp {
     }
 
     fn dispatch_runtime_event(&mut self, tab_index: usize, event: DomEventRequest) {
-        if tab_index >= self.tabs.len() { return; }
+        if tab_index >= self.tabs.len() {
+            return;
+        }
         let tab = &self.tabs[tab_index];
-        if tab.page.url == HOME { return; }
+        if tab.page.url == HOME {
+            return;
+        }
         let javascript_enabled = Url::parse(&tab.page.url)
             .ok()
             .map(|url| self.profiles.for_url(&url).javascript)
             .unwrap_or(false);
-        if !javascript_enabled { return; }
+        if !javascript_enabled {
+            return;
+        }
+        if self.runtime_inflight.contains(&tab.id) {
+            return;
+        }
 
         let request_id = self.next_runtime_request_id;
         self.next_runtime_request_id = self.next_runtime_request_id.saturating_add(1);
+        self.runtime_inflight.insert(tab.id);
         self.runtime_loader.start(RuntimeInteractionRequest {
             request_id,
             tab_id: tab.id,
@@ -497,8 +556,13 @@ impl VeilApp {
 
     fn poll_runtime_loader(&mut self, ctx: &egui::Context) {
         while let Some(result) = self.runtime_loader.try_recv() {
-            let Some(index) = self.tabs.iter().position(|tab| tab.id == result.tab_id) else { continue; };
-            if self.tabs[index].generation != result.generation { continue; }
+            self.runtime_inflight.remove(&result.tab_id);
+            let Some(index) = self.tabs.iter().position(|tab| tab.id == result.tab_id) else {
+                continue;
+            };
+            if self.tabs[index].generation != result.generation {
+                continue;
+            }
             match result.result {
                 Ok(mut view) => {
                     // Fonts are loaded by the navigation broker, not the engine process.
@@ -522,24 +586,36 @@ impl VeilApp {
 
     fn pump_runtime_timers(&mut self) {
         let elapsed = self.last_runtime_tick.elapsed();
-        if elapsed < Duration::from_millis(750) { return; }
+        if elapsed < Duration::from_millis(750) {
+            return;
+        }
         self.last_runtime_tick = Instant::now();
         let elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
 
         let mut indices = vec![self.active_tab];
         if let Some(split) = self.split_tab_index() {
-            if split != self.active_tab { indices.push(split); }
+            if split != self.active_tab {
+                indices.push(split);
+            }
         }
         for index in indices {
-            if index >= self.tabs.len() || self.tabs[index].page.url == HOME { continue; }
+            if index >= self.tabs.len() || self.tabs[index].page.url == HOME {
+                continue;
+            }
             let tab = &self.tabs[index];
             let javascript_enabled = Url::parse(&tab.page.url)
                 .ok()
                 .map(|url| self.profiles.for_url(&url).javascript)
                 .unwrap_or(false);
-            if !javascript_enabled { continue; }
+            if !javascript_enabled {
+                continue;
+            }
+            if self.runtime_inflight.contains(&tab.id) {
+                continue;
+            }
             let request_id = self.next_runtime_request_id;
             self.next_runtime_request_id = self.next_runtime_request_id.saturating_add(1);
+            self.runtime_inflight.insert(tab.id);
             self.runtime_loader.start(RuntimeInteractionRequest {
                 request_id,
                 tab_id: tab.id,
@@ -554,6 +630,7 @@ impl VeilApp {
 
     fn poll_image_loader(&mut self, ctx: &egui::Context) {
         while let Some(result) = self.image_loader.try_recv() {
+            self.image_loads_inflight = self.image_loads_inflight.saturating_sub(1);
             self.worker_blocked_count += result.blocked_count;
             for event in result.blocked_events {
                 self.blocked_log.push_front(event);
@@ -564,9 +641,17 @@ impl VeilApp {
 
             let cached = match result.result {
                 Ok(decoded) => {
-                    let color_image = egui::ColorImage::from_rgba_unmultiplied(decoded.size, &decoded.rgba);
-                    let texture = ctx.load_texture(decoded.final_url, color_image, egui::TextureOptions::LINEAR);
-                    CachedImage::Ready { texture, size: decoded.size }
+                    let color_image =
+                        egui::ColorImage::from_rgba_unmultiplied(decoded.size, &decoded.rgba);
+                    let texture = ctx.load_texture(
+                        decoded.final_url,
+                        color_image,
+                        egui::TextureOptions::LINEAR,
+                    );
+                    CachedImage::Ready {
+                        texture,
+                        size: decoded.size,
+                    }
                 }
                 Err(err) => CachedImage::Failed(err),
             };
@@ -574,11 +659,25 @@ impl VeilApp {
         }
     }
 
+    fn pump_image_queue(&mut self) {
+        while self.image_loads_inflight < MAX_IMAGE_LOADS {
+            let Some(request) = self.image_load_queue.pop_front() else {
+                break;
+            };
+            self.image_loads_inflight += 1;
+            self.image_loader.start(request);
+        }
+    }
+
     fn poll_media_loader(&mut self) {
         while let Some(result) = self.media_loader.try_recv() {
             self.worker_blocked_count += result.blocked_count;
-            for event in result.blocked_events { self.blocked_log.push_front(event); }
-            while self.blocked_log.len() > 180 { self.blocked_log.pop_back(); }
+            for event in result.blocked_events {
+                self.blocked_log.push_front(event);
+            }
+            while self.blocked_log.len() > 180 {
+                self.blocked_log.pop_back();
+            }
             let cached = match result.result {
                 Ok(probe) => CachedMedia::Ready(probe),
                 Err(error) => CachedMedia::Failed(error),
@@ -590,7 +689,9 @@ impl VeilApp {
     fn go_back(&mut self) {
         let index = self.active_tab;
         if let Some(entry) = self.tabs[index].back.pop() {
-            let current = HistoryEntry { url: self.tabs[index].page.url.clone() };
+            let current = HistoryEntry {
+                url: self.tabs[index].page.url.clone(),
+            };
             self.tabs[index].forward.push(current);
             self.navigate_tab(index, entry.url, false);
         }
@@ -599,7 +700,9 @@ impl VeilApp {
     fn go_forward(&mut self) {
         let index = self.active_tab;
         if let Some(entry) = self.tabs[index].forward.pop() {
-            let current = HistoryEntry { url: self.tabs[index].page.url.clone() };
+            let current = HistoryEntry {
+                url: self.tabs[index].page.url.clone(),
+            };
             self.tabs[index].back.push(current);
             self.navigate_tab(index, entry.url, false);
         }
@@ -660,18 +763,64 @@ impl VeilApp {
         }
     }
 
-    fn sidebar_expanded(&self, ctx: &egui::Context) -> bool {
+    fn update_hover_reveals(&mut self, ctx: &egui::Context) {
+        let now = Instant::now();
+        let pointer = ctx.input(|i| i.pointer.hover_pos());
+
         if self.sidebar_pinned {
-            return true;
+            self.sidebar_hover_since = None;
+            self.sidebar_hover_revealed = true;
+        } else {
+            let over_left_edge = pointer.map(|pos| pos.x <= 14.0).unwrap_or(false);
+            let over_open_sidebar = self.sidebar_hover_revealed
+                && pointer
+                    .map(|pos| pos.x <= EXPANDED_DOCK_WIDTH + 24.0)
+                    .unwrap_or(false);
+            if over_open_sidebar {
+                self.sidebar_hover_since = None;
+            } else if over_left_edge {
+                let started = self.sidebar_hover_since.get_or_insert(now);
+                if now.duration_since(*started) >= HOVER_REVEAL_DELAY {
+                    self.sidebar_hover_revealed = true;
+                    self.sidebar_hover_since = None;
+                } else {
+                    ctx.request_repaint_after(Duration::from_millis(40));
+                }
+            } else {
+                self.sidebar_hover_since = None;
+                self.sidebar_hover_revealed = false;
+            }
         }
-        ctx.input(|i| i.pointer.hover_pos())
-            .map(|pos| pos.x <= EXPANDED_DOCK_WIDTH + 20.0)
-            .unwrap_or(false)
+
+        let screen = ctx.screen_rect();
+        let over_controls_hotspot = pointer
+            .map(|pos| pos.y <= 46.0 && pos.x >= screen.right() - 166.0)
+            .unwrap_or(false);
+        if over_controls_hotspot {
+            let started = self.window_controls_hover_since.get_or_insert(now);
+            if self.window_controls_revealed || now.duration_since(*started) >= HOVER_REVEAL_DELAY {
+                self.window_controls_revealed = true;
+                self.window_controls_hover_since = None;
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(40));
+            }
+        } else {
+            self.window_controls_hover_since = None;
+            self.window_controls_revealed = false;
+        }
+    }
+
+    fn sidebar_expanded(&self, _ctx: &egui::Context) -> bool {
+        self.sidebar_pinned || self.sidebar_hover_revealed
     }
 
     fn render_sidebar(&mut self, ctx: &egui::Context) {
         let expanded = self.sidebar_expanded(ctx);
-        let width = if expanded { EXPANDED_DOCK_WIDTH } else { COLLAPSED_DOCK_WIDTH };
+        let width = if expanded {
+            EXPANDED_DOCK_WIDTH
+        } else {
+            COLLAPSED_DOCK_WIDTH
+        };
         let height = (ctx.screen_rect().height() - 16.0).max(320.0);
         let frame = self.glass_frame(0.0);
 
@@ -688,25 +837,40 @@ impl VeilApp {
                         ui.add_space(8.0);
                         if let Some(logo_id) = self.logo.as_ref().map(|logo| logo.id()) {
                             let image = egui::Image::new((logo_id, egui::vec2(36.0, 36.0)));
-                            if ui.add(image.sense(Sense::click())).on_hover_text("Veil Browser").clicked() {
+                            if ui
+                                .add(image.sense(Sense::click()))
+                                .on_hover_text("Veil Browser")
+                                .clicked()
+                            {
                                 let active = self.active_tab;
                                 self.navigate_tab(active, HOME.into(), true);
                             }
-                        } else if ui.add_sized([36.0, 36.0], egui::Button::new(RichText::new("V").strong())).clicked() {
+                        } else if ui
+                            .add_sized([36.0, 36.0], egui::Button::new(RichText::new("V").strong()))
+                            .clicked()
+                        {
                             let active = self.active_tab;
                             self.navigate_tab(active, HOME.into(), true);
                         }
                         if expanded {
                             ui.vertical(|ui| {
                                 ui.label(RichText::new("Veil").strong().size(16.0));
-                                ui.label(RichText::new("Private browser").small().color(Color32::from_gray(150)));
+                                ui.label(
+                                    RichText::new("Private browser")
+                                        .small()
+                                        .color(Color32::from_gray(150)),
+                                );
                             });
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let pin = if self.sidebar_pinned { "◆" } else { "◇" };
-                                if ui.button(pin).on_hover_text("Pin command center").clicked() {
-                                    self.sidebar_pinned = !self.sidebar_pinned;
-                                }
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let pin = if self.sidebar_pinned { "◆" } else { "◇" };
+                                    if ui.button(pin).on_hover_text("Pin command center").clicked()
+                                    {
+                                        self.sidebar_pinned = !self.sidebar_pinned;
+                                    }
+                                },
+                            );
                         }
                     });
 
@@ -717,25 +881,45 @@ impl VeilApp {
                     let mut requested_space = None;
                     if expanded {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("Spaces").small().color(Color32::from_gray(145)));
+                            ui.label(
+                                RichText::new("Spaces")
+                                    .small()
+                                    .color(Color32::from_gray(145)),
+                            );
                             ui.add_space(4.0);
                             for (index, label) in ["Personal", "Work", "Focus"].iter().enumerate() {
                                 let selected = self.active_space == index;
-                                let text = if selected { format!("● {}", &label[..1]) } else { format!("○ {}", &label[..1]) };
-                                if ui.small_button(text).on_hover_text(*label).clicked() { requested_space = Some(index); }
+                                let text = if selected {
+                                    format!("● {}", &label[..1])
+                                } else {
+                                    format!("○ {}", &label[..1])
+                                };
+                                if ui.small_button(text).on_hover_text(*label).clicked() {
+                                    requested_space = Some(index);
+                                }
                             }
                         });
                     } else {
                         ui.vertical_centered(|ui| {
                             for index in 0..3 {
-                                let glyph = if self.active_space == index { "●" } else { "○" };
-                                if ui.add_sized([34.0, 24.0], egui::Button::new(glyph).frame(false))
+                                let glyph = if self.active_space == index {
+                                    "●"
+                                } else {
+                                    "○"
+                                };
+                                if ui
+                                    .add_sized([34.0, 24.0], egui::Button::new(glyph).frame(false))
                                     .on_hover_text(["Personal", "Work", "Focus"][index])
-                                    .clicked() { requested_space = Some(index); }
+                                    .clicked()
+                                {
+                                    requested_space = Some(index);
+                                }
                             }
                         });
                     }
-                    if let Some(space) = requested_space { self.switch_space(space); }
+                    if let Some(space) = requested_space {
+                        self.switch_space(space);
+                    }
 
                     ui.add_space(6.0);
                     ui.separator();
@@ -749,7 +933,9 @@ impl VeilApp {
                         .max_height(available_for_tabs)
                         .show(ui, |ui| {
                             for index in 0..self.tabs.len() {
-                                if self.tabs[index].space != self.active_space { continue; }
+                                if self.tabs[index].space != self.active_space {
+                                    continue;
+                                }
                                 let title = truncate_title(&self.tabs[index].page.title, 28);
                                 let loading = self.tabs[index].loading;
                                 let active = index == self.active_tab;
@@ -759,7 +945,10 @@ impl VeilApp {
                                     Color32::TRANSPARENT
                                 };
                                 let stroke = if active {
-                                    egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 22))
+                                    egui::Stroke::new(
+                                        1.0_f32,
+                                        Color32::from_rgba_unmultiplied(255, 255, 255, 22),
+                                    )
                                 } else {
                                     egui::Stroke::NONE
                                 };
@@ -769,22 +958,36 @@ impl VeilApp {
                                     .corner_radius(11)
                                     .inner_margin(3)
                                     .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        let response = self.render_tab_icon(ctx, ui, index);
-                                        if response.clicked() {
-                                            choose_tab = Some(index);
-                                        }
-                                        if expanded {
-                                            let label = if loading { format!("◌ {title}") } else { title };
-                                            if ui.add_sized([144.0, 34.0], egui::Button::new(label).frame(false)).clicked() {
+                                        ui.horizontal(|ui| {
+                                            let response = self.render_tab_icon(ctx, ui, index);
+                                            if response.clicked() {
                                                 choose_tab = Some(index);
                                             }
-                                            if ui.small_button("×").on_hover_text("Close tab · Ctrl+W").clicked() {
-                                                close_tab = Some(index);
+                                            if expanded {
+                                                let label = if loading {
+                                                    format!("◌ {title}")
+                                                } else {
+                                                    title
+                                                };
+                                                if ui
+                                                    .add_sized(
+                                                        [144.0, 34.0],
+                                                        egui::Button::new(label).frame(false),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    choose_tab = Some(index);
+                                                }
+                                                if ui
+                                                    .small_button("×")
+                                                    .on_hover_text("Close tab · Ctrl+W")
+                                                    .clicked()
+                                                {
+                                                    close_tab = Some(index);
+                                                }
                                             }
-                                        }
+                                        });
                                     });
-                                });
                                 ui.add_space(2.0);
                             }
                         });
@@ -799,12 +1002,20 @@ impl VeilApp {
                     ui.separator();
                     ui.add_space(4.0);
                     sidebar_action(ui, expanded, "+", "New tab", "Ctrl+T", || self.new_tab());
-                    sidebar_action(ui, expanded, "◫", "Split view", "Ctrl+Shift+S", || self.toggle_split());
-                    sidebar_action(ui, expanded, "◈", "Privacy Shield", "", || self.show_privacy = !self.show_privacy);
+                    sidebar_action(ui, expanded, "◫", "Split view", "Ctrl+Shift+S", || {
+                        self.toggle_split()
+                    });
+                    sidebar_action(ui, expanded, "◈", "Privacy Shield", "", || {
+                        self.show_privacy = !self.show_privacy
+                    });
 
                     if expanded {
                         ui.add_space(8.0);
-                        ui.label(RichText::new(&self.tabs[self.active_tab].status).small().color(Color32::GRAY));
+                        ui.label(
+                            RichText::new(&self.tabs[self.active_tab].status)
+                                .small()
+                                .color(Color32::GRAY),
+                        );
                         ui.add_space(4.0);
                         ui.label(
                             RichText::new("Subtle glass · private by default · no telemetry")
@@ -816,16 +1027,25 @@ impl VeilApp {
             });
     }
 
-    fn render_tab_icon(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, tab_index: usize) -> egui::Response {
+    fn render_tab_icon(
+        &mut self,
+        ctx: &egui::Context,
+        ui: &mut egui::Ui,
+        tab_index: usize,
+    ) -> egui::Response {
         let icon_url = self.tabs[tab_index].page.icon_url.clone();
         let top_level = Url::parse(&self.tabs[tab_index].page.url).ok();
-        let privacy = top_level.as_ref().map(|url| self.profiles.for_url(url)).unwrap_or_default();
+        let privacy = top_level
+            .as_ref()
+            .map(|url| self.profiles.for_url(url))
+            .unwrap_or_default();
 
         if let (Some(icon_url), Some(top_level)) = (icon_url, top_level) {
             if !self.image_cache.contains_key(&icon_url) {
                 if let Ok(url) = Url::parse(&icon_url) {
-                    self.image_cache.insert(icon_url.clone(), CachedImage::Loading);
-                    self.image_loader.start(ImageLoadRequest {
+                    self.image_cache
+                        .insert(icon_url.clone(), CachedImage::Loading);
+                    self.image_load_queue.push_back(ImageLoadRequest {
                         key: icon_url.clone(),
                         top_level,
                         url,
@@ -839,14 +1059,20 @@ impl VeilApp {
 
             if let Some(CachedImage::Ready { texture, .. }) = self.image_cache.get(&icon_url) {
                 return ui
-                    .add(egui::Image::new((texture.id(), egui::vec2(30.0, 30.0))).sense(Sense::click()))
+                    .add(
+                        egui::Image::new((texture.id(), egui::vec2(30.0, 30.0)))
+                            .sense(Sense::click()),
+                    )
                     .on_hover_text(&self.tabs[tab_index].page.title);
             }
         }
 
         let monogram = tab_monogram(&self.tabs[tab_index]);
-        ui.add_sized([38.0, 38.0], egui::Button::new(RichText::new(monogram).strong()))
-            .on_hover_text(&self.tabs[tab_index].page.title)
+        ui.add_sized(
+            [38.0, 38.0],
+            egui::Button::new(RichText::new(monogram).strong()),
+        )
+        .on_hover_text(&self.tabs[tab_index].page.title)
     }
 
     fn render_address_pill(&mut self, ctx: &egui::Context) {
@@ -869,10 +1095,18 @@ impl VeilApp {
                     let privacy = self.current_privacy();
 
                     ui.horizontal(|ui| {
-                        if ui.add_enabled(can_back, egui::Button::new("←").frame(false)).on_hover_text("Back · Alt+Left").clicked() {
+                        if ui
+                            .add_enabled(can_back, egui::Button::new("←").frame(false))
+                            .on_hover_text("Back · Alt+Left")
+                            .clicked()
+                        {
                             self.go_back();
                         }
-                        if ui.add_enabled(can_forward, egui::Button::new("→").frame(false)).on_hover_text("Forward · Alt+Right").clicked() {
+                        if ui
+                            .add_enabled(can_forward, egui::Button::new("→").frame(false))
+                            .on_hover_text("Forward · Alt+Right")
+                            .clicked()
+                        {
                             self.go_forward();
                         }
                         if loading {
@@ -1069,7 +1303,11 @@ impl VeilApp {
         let tab_id = self.tabs[tab_index].id;
         let mut navigation: Option<String> = None;
         let available = ui.available_size();
-        let top_space = if split { 42.0 } else { (available.y * 0.13).clamp(56.0, 130.0) };
+        let top_space = if split {
+            42.0
+        } else {
+            (available.y * 0.13).clamp(56.0, 130.0)
+        };
 
         ScrollArea::vertical()
             .id_salt(("veil_home", tab_id))
@@ -1082,11 +1320,22 @@ impl VeilApp {
                         ui.image((logo.id(), egui::vec2(size, size)));
                     }
                     ui.add_space(12.0);
-                    ui.label(RichText::new("Veil Browser").strong().size(if split { 28.0 } else { 36.0 }));
-                    ui.label(RichText::new("A quieter web.").size(15.0).color(Color32::from_gray(160)));
+                    ui.label(RichText::new("Veil Browser").strong().size(if split {
+                        28.0
+                    } else {
+                        36.0
+                    }));
+                    ui.label(
+                        RichText::new("A quieter web.")
+                            .size(15.0)
+                            .color(Color32::from_gray(160)),
+                    );
                     ui.add_space(if split { 20.0 } else { 28.0 });
 
-                    let search_width = ui.available_width().min(if split { 520.0 } else { 680.0 }).max(280.0);
+                    let search_width = ui
+                        .available_width()
+                        .min(if split { 520.0 } else { 680.0 })
+                        .max(280.0);
                     self.glass_frame(0.04).show(ui, |ui| {
                         ui.set_min_width(search_width);
                         ui.horizontal(|ui| {
@@ -1099,7 +1348,9 @@ impl VeilApp {
                                     .hint_text("Search privately or enter a URL")
                                     .frame(false),
                             );
-                            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            if response.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                            {
                                 navigation = Some(query.clone());
                             }
                         });
@@ -1114,19 +1365,38 @@ impl VeilApp {
                             ("W  Wikipedia", "https://wikipedia.org"),
                             ("＋  New tab", HOME),
                         ] {
-                            if ui.add_sized([132.0, 46.0], egui::Button::new(label)).clicked() {
-                                if target == HOME { self.new_tab(); } else { navigation = Some(target.into()); }
+                            if ui
+                                .add_sized([132.0, 46.0], egui::Button::new(label))
+                                .clicked()
+                            {
+                                if target == HOME {
+                                    self.new_tab();
+                                } else {
+                                    navigation = Some(target.into());
+                                }
                             }
                         }
                     });
 
                     ui.add_space(28.0);
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new("◈ Shield active").small().color(Color32::from_gray(165)));
+                        ui.label(
+                            RichText::new("◈ Shield active")
+                                .small()
+                                .color(Color32::from_gray(165)),
+                        );
                         ui.separator();
-                        ui.label(RichText::new("No telemetry").small().color(Color32::from_gray(165)));
+                        ui.label(
+                            RichText::new("No telemetry")
+                                .small()
+                                .color(Color32::from_gray(165)),
+                        );
                         ui.separator();
-                        ui.label(RichText::new("Session data stays in memory").small().color(Color32::from_gray(165)));
+                        ui.label(
+                            RichText::new("Session data stays in memory")
+                                .small()
+                                .color(Color32::from_gray(165)),
+                        );
                     });
                 });
             });
@@ -1136,7 +1406,13 @@ impl VeilApp {
         }
     }
 
-    fn render_page_for_tab(&mut self, ctx: &egui::Context, ui: &mut egui::Ui, tab_index: usize, split: bool) {
+    fn render_page_for_tab(
+        &mut self,
+        ctx: &egui::Context,
+        ui: &mut egui::Ui,
+        tab_index: usize,
+        split: bool,
+    ) {
         if tab_index >= self.tabs.len() {
             return;
         }
@@ -1146,14 +1422,25 @@ impl VeilApp {
         }
         let page = self.tabs[tab_index].page.clone();
         let base_url = Url::parse(&page.url).ok();
-        let privacy = base_url.as_ref().map(|url| self.profiles.for_url(url)).unwrap_or_default();
+        let privacy = base_url
+            .as_ref()
+            .map(|url| self.profiles.for_url(url))
+            .unwrap_or_default();
         let mut navigation = None;
 
         if split {
             let active = tab_index == self.active_tab;
             let title = truncate_title(&page.title, 34);
-            let chip = if active { format!("● {title}") } else { title };
-            if ui.add(egui::Button::new(chip).frame(false)).on_hover_text("Click to make this the active pane").clicked() {
+            let chip = if active {
+                format!("● {title}")
+            } else {
+                title
+            };
+            if ui
+                .add(egui::Button::new(chip).frame(false))
+                .on_hover_text("Click to make this the active pane")
+                .clicked()
+            {
                 self.activate_tab(tab_index);
             }
             ui.separator();
@@ -1169,7 +1456,15 @@ impl VeilApp {
                     ui.vertical(|ui| {
                         ui.set_max_width((ui.available_width() - 20.0).max(280.0).min(1260.0));
                         for block in &page.blocks {
-                            self.render_block(ctx, ui, tab_index, block, base_url.as_ref(), privacy, &mut navigation);
+                            self.render_block(
+                                ctx,
+                                ui,
+                                tab_index,
+                                block,
+                                base_url.as_ref(),
+                                privacy,
+                                &mut navigation,
+                            );
                         }
                         ui.add_space(56.0);
                     });
@@ -1193,21 +1488,36 @@ impl VeilApp {
     ) {
         match block {
             RenderBlock::Heading { runs, style, .. } | RenderBlock::Paragraph { runs, style } => {
-                with_box(ui, style, |ui| render_runs(ui, runs, base_url, navigation, style.text_align, &self.web_font_registry));
+                with_box(ui, style, |ui| {
+                    render_runs(
+                        ui,
+                        runs,
+                        base_url,
+                        navigation,
+                        style.text_align,
+                        &self.web_font_registry,
+                    )
+                });
             }
             RenderBlock::Container { children, style } => {
                 with_box(ui, style, |ui| match style.layout {
                     LayoutMode::Block => {
                         for child in children {
-                            self.render_block(ctx, ui, tab_index, child, base_url, privacy, navigation);
+                            self.render_block(
+                                ctx, ui, tab_index, child, base_url, privacy, navigation,
+                            );
                         }
                     }
                     LayoutMode::FlexColumn => {
                         let mut ordered: Vec<&RenderBlock> = children.iter().collect();
                         ordered.sort_by_key(|child| block_order(child));
                         for (index, child) in ordered.iter().enumerate() {
-                            self.render_block(ctx, ui, tab_index, child, base_url, privacy, navigation);
-                            if index + 1 < ordered.len() { ui.add_space(style.gap); }
+                            self.render_block(
+                                ctx, ui, tab_index, child, base_url, privacy, navigation,
+                            );
+                            if index + 1 < ordered.len() {
+                                ui.add_space(style.gap);
+                            }
                         }
                     }
                     LayoutMode::FlexRow => {
@@ -1215,8 +1525,12 @@ impl VeilApp {
                         ordered.sort_by_key(|child| block_order(child));
                         let mut render_children = |ui: &mut egui::Ui| {
                             for (index, child) in ordered.iter().enumerate() {
-                                self.render_block(ctx, ui, tab_index, child, base_url, privacy, navigation);
-                                if index + 1 < ordered.len() { ui.add_space(style.gap); }
+                                self.render_block(
+                                    ctx, ui, tab_index, child, base_url, privacy, navigation,
+                                );
+                                if index + 1 < ordered.len() {
+                                    ui.add_space(style.gap);
+                                }
                             }
                         };
                         if style.flex_wrap {
@@ -1228,7 +1542,8 @@ impl VeilApp {
                         }
                     }
                     LayoutMode::Grid => {
-                        let responsive_cap = ((ui.available_width() / 180.0).floor() as usize).max(1);
+                        let responsive_cap =
+                            ((ui.available_width() / 180.0).floor() as usize).max(1);
                         let columns = style.grid_columns.max(1).min(responsive_cap.max(1));
                         let grid_id = format!("vv_grid_{:p}", children.as_ptr());
                         egui::Grid::new(grid_id)
@@ -1236,7 +1551,9 @@ impl VeilApp {
                             .spacing([style.gap.max(4.0), style.gap.max(4.0)])
                             .show(ui, |ui| {
                                 for (index, child) in children.iter().enumerate() {
-                                    self.render_block(ctx, ui, tab_index, child, base_url, privacy, navigation);
+                                    self.render_block(
+                                        ctx, ui, tab_index, child, base_url, privacy, navigation,
+                                    );
                                     if (index + 1) % columns == 0 {
                                         ui.end_row();
                                     }
@@ -1245,44 +1562,107 @@ impl VeilApp {
                     }
                 });
             }
-            RenderBlock::Image { src, alt, width, height, style } => {
+            RenderBlock::Image {
+                src,
+                alt,
+                width,
+                height,
+                style,
+            } => {
                 with_box(ui, style, |ui| {
                     self.render_image(ctx, ui, base_url, src, alt, *width, *height, privacy)
                 });
             }
-            RenderBlock::Canvas { width, height, commands, style, .. } => {
+            RenderBlock::Canvas {
+                width,
+                height,
+                commands,
+                style,
+                ..
+            } => {
                 with_box(ui, style, |ui| render_canvas(ui, *width, *height, commands));
             }
-            RenderBlock::Media { kind, src, poster, controls, muted, autoplay, width, height, style } => {
+            RenderBlock::Media {
+                kind,
+                src,
+                poster,
+                controls,
+                muted,
+                autoplay,
+                width,
+                height,
+                style,
+            } => {
                 with_box(ui, style, |ui| {
                     if let Some(poster) = poster {
-                        self.render_image(ctx, ui, base_url, poster, "Video poster", *width, *height, privacy);
+                        self.render_image(
+                            ctx,
+                            ui,
+                            base_url,
+                            poster,
+                            "Video poster",
+                            *width,
+                            *height,
+                            privacy,
+                        );
                     }
-                    ui.label(RichText::new(format!("{} element", kind.to_ascii_uppercase())).strong());
+                    ui.label(
+                        RichText::new(format!("{} element", kind.to_ascii_uppercase())).strong(),
+                    );
                     if src.is_empty() {
                         ui.label(RichText::new("No supported media source was found.").small());
                         return;
                     }
                     let resolved = resolve_href(base_url, src);
                     ui.label(RichText::new(&resolved).small().color(Color32::GRAY));
-                    ui.label(RichText::new(format!("controls: {controls} · muted: {muted} · autoplay: {autoplay}")).small().color(Color32::GRAY));
-                    let Some(top_level) = base_url else { return; };
+                    ui.label(
+                        RichText::new(format!(
+                            "controls: {controls} · muted: {muted} · autoplay: {autoplay}"
+                        ))
+                        .small()
+                        .color(Color32::GRAY),
+                    );
+                    let Some(top_level) = base_url else {
+                        return;
+                    };
                     let key = format!("{}|{}", top_level, resolved);
                     match self.media_cache.get(&key).cloned() {
-                        Some(CachedMedia::Loading) => { ui.spinner(); ui.label("Loading media through Privacy Shield…"); }
+                        Some(CachedMedia::Loading) => {
+                            ui.spinner();
+                            ui.label("Loading media through Privacy Shield…");
+                        }
                         Some(CachedMedia::Ready(probe)) => {
-                            ui.label(format!("{} · {:.1} MiB", probe.format, probe.byte_len as f64 / (1024.0 * 1024.0)));
-                            if let Some(duration) = probe.duration_seconds { ui.label(format!("Duration: {:.2} s", duration)); }
-                            if !probe.content_type.is_empty() { ui.label(RichText::new(probe.content_type).small().color(Color32::GRAY)); }
+                            ui.label(format!(
+                                "{} · {:.1} MiB",
+                                probe.format,
+                                probe.byte_len as f64 / (1024.0 * 1024.0)
+                            ));
+                            if let Some(duration) = probe.duration_seconds {
+                                ui.label(format!("Duration: {:.2} s", duration));
+                            }
+                            if !probe.content_type.is_empty() {
+                                ui.label(
+                                    RichText::new(probe.content_type)
+                                        .small()
+                                        .color(Color32::GRAY),
+                                );
+                            }
                             ui.label(RichText::new("0.5 has the privacy-filtered media fetch/probe pipeline; full cross-codec audio/video playback is still being built.").small());
                         }
-                        Some(CachedMedia::Failed(error)) => { ui.label(RichText::new(error).small().color(Color32::LIGHT_RED)); }
+                        Some(CachedMedia::Failed(error)) => {
+                            ui.label(RichText::new(error).small().color(Color32::LIGHT_RED));
+                        }
                         None => {
                             if ui.button("Load media").clicked() {
                                 if let Ok(url) = Url::parse(&resolved) {
                                     self.media_cache.insert(key.clone(), CachedMedia::Loading);
                                     self.media_loader.start(MediaLoadRequest {
-                                        key, top_level: top_level.clone(), url, privacy, custom_filters: self.custom_filters.clone(), storage: self.storage.clone(),
+                                        key,
+                                        top_level: top_level.clone(),
+                                        url,
+                                        privacy,
+                                        custom_filters: self.custom_filters.clone(),
+                                        storage: self.storage.clone(),
                                     });
                                 }
                             }
@@ -1290,10 +1670,17 @@ impl VeilApp {
                     }
                 });
             }
-            RenderBlock::Form { action, method, enctype, controls, style } => {
+            RenderBlock::Form {
+                action,
+                method,
+                enctype,
+                controls,
+                style,
+            } => {
                 let mut submit = None;
                 with_box(ui, style, |ui| {
-                    submit = self.render_form(ui, tab_index, base_url, action, method, enctype, controls);
+                    submit = self
+                        .render_form(ui, tab_index, base_url, action, method, enctype, controls);
                 });
                 if submit.is_some() {
                     *navigation = submit;
@@ -1334,11 +1721,17 @@ impl VeilApp {
                 let key = (tab_id, generation, control.node_id);
                 match control.kind {
                     FormControlKind::Hidden => {
-                        self.form_values.entry(key).or_insert_with(|| control.value.clone());
+                        self.form_values
+                            .entry(key)
+                            .or_insert_with(|| control.value.clone());
                     }
                     FormControlKind::Checkbox => {
                         let value = self.form_checks.entry(key).or_insert(control.checked);
-                        let label = if control.label.is_empty() { control.name.as_str() } else { control.label.as_str() };
+                        let label = if control.label.is_empty() {
+                            control.name.as_str()
+                        } else {
+                            control.label.as_str()
+                        };
                         let response = ui.checkbox(value, label);
                         if response.changed() {
                             runtime_events.push(DomEventRequest {
@@ -1349,7 +1742,11 @@ impl VeilApp {
                         }
                     }
                     FormControlKind::Submit => {
-                        let label = if control.label.trim().is_empty() { "Submit" } else { control.label.as_str() };
+                        let label = if control.label.trim().is_empty() {
+                            "Submit"
+                        } else {
+                            control.label.as_str()
+                        };
                         if ui.button(label).clicked() {
                             runtime_events.push(DomEventRequest {
                                 node_id: control.node_id,
@@ -1360,7 +1757,11 @@ impl VeilApp {
                         }
                     }
                     FormControlKind::Button => {
-                        let label = if control.label.trim().is_empty() { "Button" } else { control.label.as_str() };
+                        let label = if control.label.trim().is_empty() {
+                            "Button"
+                        } else {
+                            control.label.as_str()
+                        };
                         if ui.button(label).clicked() {
                             runtime_events.push(DomEventRequest {
                                 node_id: control.node_id,
@@ -1373,16 +1774,29 @@ impl VeilApp {
                         let value = self.form_values.entry(key).or_default();
                         ui.horizontal(|ui| {
                             ui.label("File");
-                            ui.add(egui::TextEdit::singleline(value).desired_width(360.0).hint_text("Local file path"));
+                            ui.add(
+                                egui::TextEdit::singleline(value)
+                                    .desired_width(360.0)
+                                    .hint_text("Local file path"),
+                            );
                         });
-                        ui.label(RichText::new("Veil Browser reads this file only when you submit this form.").small().color(Color32::GRAY));
+                        ui.label(
+                            RichText::new(
+                                "Veil Browser reads this file only when you submit this form.",
+                            )
+                            .small()
+                            .color(Color32::GRAY),
+                        );
                     }
                     FormControlKind::Password
                     | FormControlKind::Text
                     | FormControlKind::Search
                     | FormControlKind::Email
                     | FormControlKind::Url => {
-                        let value = self.form_values.entry(key).or_insert_with(|| control.value.clone());
+                        let value = self
+                            .form_values
+                            .entry(key)
+                            .or_insert_with(|| control.value.clone());
                         let mut edit = egui::TextEdit::singleline(value).desired_width(420.0);
                         if !control.placeholder.is_empty() {
                             edit = edit.hint_text(&control.placeholder);
@@ -1437,7 +1851,9 @@ impl VeilApp {
         let mut pairs = Vec::new();
         let mut file_inputs: Vec<(String, String)> = Vec::new();
         for control in controls {
-            if control.name.is_empty() { continue; }
+            if control.name.is_empty() {
+                continue;
+            }
             let key = (tab_id, generation, control.node_id);
             match control.kind {
                 FormControlKind::Submit => {
@@ -1448,40 +1864,65 @@ impl VeilApp {
                 FormControlKind::Button => {}
                 FormControlKind::Checkbox => {
                     if *self.form_checks.get(&key).unwrap_or(&control.checked) {
-                        pairs.push((control.name.clone(), if control.value.is_empty() { "on".into() } else { control.value.clone() }));
+                        pairs.push((
+                            control.name.clone(),
+                            if control.value.is_empty() {
+                                "on".into()
+                            } else {
+                                control.value.clone()
+                            },
+                        ));
                     }
                 }
                 FormControlKind::File => {
                     let path = self.form_values.get(&key).cloned().unwrap_or_default();
-                    if !path.trim().is_empty() { file_inputs.push((control.name.clone(), path)); }
+                    if !path.trim().is_empty() {
+                        file_inputs.push((control.name.clone(), path));
+                    }
                 }
                 _ => {
-                    let value = self.form_values.get(&key).cloned().unwrap_or_else(|| control.value.clone());
+                    let value = self
+                        .form_values
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or_else(|| control.value.clone());
                     pairs.push((control.name.clone(), value));
                 }
             }
         }
 
-        let wants_multipart = method == "post" && (enctype.eq_ignore_ascii_case("multipart/form-data") || !file_inputs.is_empty());
+        let wants_multipart = method == "post"
+            && (enctype.eq_ignore_ascii_case("multipart/form-data") || !file_inputs.is_empty());
         if wants_multipart {
             let mut parts = Vec::new();
             for (name, value) in &pairs {
-                parts.push(MultipartPart { name: name.clone(), filename: None, content_type: None, data: value.as_bytes().to_vec() });
+                parts.push(MultipartPart {
+                    name: name.clone(),
+                    filename: None,
+                    content_type: None,
+                    data: value.as_bytes().to_vec(),
+                });
             }
             for (name, path) in file_inputs {
                 let file_path = Path::new(path.trim());
                 let bytes = match std::fs::read(file_path) {
                     Ok(bytes) => bytes,
                     Err(error) => {
-                        self.tabs[tab_index].status = format!("Could not read upload file: {error}");
+                        self.tabs[tab_index].status =
+                            format!("Could not read upload file: {error}");
                         return None;
                     }
                 };
                 if bytes.len() > 32 * 1024 * 1024 {
-                    self.tabs[tab_index].status = "Upload file exceeds Veil Browser's 32 MiB safety limit".into();
+                    self.tabs[tab_index].status =
+                        "Upload file exceeds Veil Browser's 32 MiB safety limit".into();
                     return None;
                 }
-                let filename = file_path.file_name().and_then(|name| name.to_str()).unwrap_or("upload.bin").to_owned();
+                let filename = file_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("upload.bin")
+                    .to_owned();
                 parts.push(MultipartPart {
                     name,
                     filename: Some(filename),
@@ -1489,22 +1930,41 @@ impl VeilApp {
                     data: bytes,
                 });
             }
-            Some(PendingNavigation { url: url.to_string(), method: NavigationMethod::PostMultipart(parts) })
+            Some(PendingNavigation {
+                url: url.to_string(),
+                method: NavigationMethod::PostMultipart(parts),
+            })
         } else if method == "post" {
             for (name, path) in file_inputs {
-                let filename = Path::new(path.trim()).file_name().and_then(|value| value.to_str()).unwrap_or("").to_owned();
+                let filename = Path::new(path.trim())
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("")
+                    .to_owned();
                 pairs.push((name, filename));
             }
             let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-            for (name, value) in &pairs { serializer.append_pair(name, value); }
-            Some(PendingNavigation { url: url.to_string(), method: NavigationMethod::PostForm(serializer.finish()) })
+            for (name, value) in &pairs {
+                serializer.append_pair(name, value);
+            }
+            Some(PendingNavigation {
+                url: url.to_string(),
+                method: NavigationMethod::PostForm(serializer.finish()),
+            })
         } else {
             for (name, path) in file_inputs {
-                let filename = Path::new(path.trim()).file_name().and_then(|value| value.to_str()).unwrap_or("").to_owned();
+                let filename = Path::new(path.trim())
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("")
+                    .to_owned();
                 pairs.push((name, filename));
             }
             url.query_pairs_mut().clear().extend_pairs(pairs);
-            Some(PendingNavigation { url: url.to_string(), method: NavigationMethod::Get })
+            Some(PendingNavigation {
+                url: url.to_string(),
+                method: NavigationMethod::Get,
+            })
         }
     }
 
@@ -1540,8 +2000,9 @@ impl VeilApp {
 
         let cache_key = image_url.to_string();
         if !self.image_cache.contains_key(&cache_key) {
-            self.image_cache.insert(cache_key.clone(), CachedImage::Loading);
-            self.image_loader.start(ImageLoadRequest {
+            self.image_cache
+                .insert(cache_key.clone(), CachedImage::Loading);
+            self.image_load_queue.push_back(ImageLoadRequest {
                 key: cache_key.clone(),
                 top_level: top_level.clone(),
                 url: image_url,
@@ -1587,10 +2048,12 @@ impl eframe::App for VeilApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.update_hover_reveals(ctx);
         self.poll_loader(ctx);
         self.poll_runtime_loader(ctx);
         self.pump_runtime_timers();
         self.poll_image_loader(ctx);
+        self.pump_image_queue();
         self.poll_media_loader();
         self.handle_shortcuts(ctx);
         if self.tabs.iter().any(|tab| tab.loading) {
@@ -1600,6 +2063,7 @@ impl eframe::App for VeilApp {
         shell_ui::render_content(self, ctx);
         shell_ui::render_sidebar(self, ctx);
         shell_ui::render_address_pill(self, ctx);
+        shell_ui::render_window_chrome(self, ctx);
         self.render_privacy_panel(ctx);
     }
 }
@@ -1613,10 +2077,20 @@ fn sidebar_action(
     action: impl FnOnce(),
 ) {
     let clicked = if expanded {
-        let text = if shortcut.is_empty() { label.to_owned() } else { format!("{label}    {shortcut}") };
-        ui.add_sized([216.0, 34.0], egui::Button::new(format!("{icon}  {text}")).frame(false)).clicked()
+        let text = if shortcut.is_empty() {
+            label.to_owned()
+        } else {
+            format!("{label}    {shortcut}")
+        };
+        ui.add_sized(
+            [216.0, 34.0],
+            egui::Button::new(format!("{icon}  {text}")).frame(false),
+        )
+        .clicked()
     } else {
-        ui.add_sized([38.0, 36.0], egui::Button::new(icon)).on_hover_text(label).clicked()
+        ui.add_sized([38.0, 36.0], egui::Button::new(icon))
+            .on_hover_text(label)
+            .clicked()
     };
     if clicked {
         action();
@@ -1658,7 +2132,10 @@ fn render_runs(
                 }
                 if let Some(href) = &run.href {
                     if ui.link(text).clicked() {
-                        *navigation = Some(PendingNavigation { url: resolve_href(base_url, href), method: NavigationMethod::Get });
+                        *navigation = Some(PendingNavigation {
+                            url: resolve_href(base_url, href),
+                            method: NavigationMethod::Get,
+                        });
                     }
                 } else {
                     ui.label(text);
@@ -1671,7 +2148,9 @@ fn render_runs(
             ui.vertical_centered(|ui| render(ui, navigation));
         }
         TextAlign::Right => {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| render(ui, navigation));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                render(ui, navigation)
+            });
         }
         TextAlign::Left => render(ui, navigation),
     }
@@ -1729,7 +2208,13 @@ fn block_order(block: &RenderBlock) -> i32 {
 }
 
 fn guess_mime(path: &Path) -> &'static str {
-    match path.extension().and_then(|ext| ext.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "txt" | "log" | "md" => "text/plain",
         "html" | "htm" => "text/html",
         "json" => "application/json",
@@ -1807,30 +2292,65 @@ fn render_canvas(ui: &mut egui::Ui, width: f32, height: f32, commands: &[CanvasC
         let min = rect.min + egui::vec2(command.x, command.y);
         match command.op.as_str() {
             "fillRect" => {
-                painter.rect_filled(egui::Rect::from_min_size(min, egui::vec2(command.w, command.h)), 0.0, fill);
+                painter.rect_filled(
+                    egui::Rect::from_min_size(min, egui::vec2(command.w, command.h)),
+                    0.0,
+                    fill,
+                );
             }
             "strokeRect" => {
                 let r = egui::Rect::from_min_size(min, egui::vec2(command.w, command.h));
-                painter.line_segment([r.left_top(), r.right_top()], egui::Stroke::new(1.0_f32, stroke));
-                painter.line_segment([r.right_top(), r.right_bottom()], egui::Stroke::new(1.0_f32, stroke));
-                painter.line_segment([r.right_bottom(), r.left_bottom()], egui::Stroke::new(1.0_f32, stroke));
-                painter.line_segment([r.left_bottom(), r.left_top()], egui::Stroke::new(1.0_f32, stroke));
+                painter.line_segment(
+                    [r.left_top(), r.right_top()],
+                    egui::Stroke::new(1.0_f32, stroke),
+                );
+                painter.line_segment(
+                    [r.right_top(), r.right_bottom()],
+                    egui::Stroke::new(1.0_f32, stroke),
+                );
+                painter.line_segment(
+                    [r.right_bottom(), r.left_bottom()],
+                    egui::Stroke::new(1.0_f32, stroke),
+                );
+                painter.line_segment(
+                    [r.left_bottom(), r.left_top()],
+                    egui::Stroke::new(1.0_f32, stroke),
+                );
             }
             "fillText" => {
-                painter.text(min, Align2::LEFT_TOP, &command.text, FontId::proportional(command.font_size.max(8.0)), fill);
+                painter.text(
+                    min,
+                    Align2::LEFT_TOP,
+                    &command.text,
+                    FontId::proportional(command.font_size.max(8.0)),
+                    fill,
+                );
             }
             "strokeText" => {
-                painter.text(min, Align2::LEFT_TOP, &command.text, FontId::proportional(command.font_size.max(8.0)), stroke);
+                painter.text(
+                    min,
+                    Align2::LEFT_TOP,
+                    &command.text,
+                    FontId::proportional(command.font_size.max(8.0)),
+                    stroke,
+                );
             }
             "line" => {
                 let end = rect.min + egui::vec2(command.x2, command.y2);
-                painter.line_segment([min, end], egui::Stroke::new(command.line_width.max(0.5), stroke));
+                painter.line_segment(
+                    [min, end],
+                    egui::Stroke::new(command.line_width.max(0.5), stroke),
+                );
             }
             "fillArc" => {
                 painter.circle_filled(min, command.radius.max(0.0), fill);
             }
             "strokeArc" => {
-                painter.circle_stroke(min, command.radius.max(0.0), egui::Stroke::new(command.line_width.max(0.5), stroke));
+                painter.circle_stroke(
+                    min,
+                    command.radius.max(0.0),
+                    egui::Stroke::new(command.line_width.max(0.5), stroke),
+                );
             }
             "clearRect" => {}
             _ => {}
@@ -1927,11 +2447,18 @@ fn tab_monogram(tab: &Tab) -> String {
                 .unwrap_or_else(|| "•".into());
         }
     }
-    tab.page.title.chars().next().map(|c| c.to_string()).unwrap_or_else(|| "•".into())
+    tab.page
+        .title
+        .chars()
+        .next()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "•".into())
 }
 
 fn load_embedded_logo(ctx: &egui::Context) -> Option<TextureHandle> {
-    let image = image::load_from_memory(include_bytes!("../assets/veil-glass-icon.png")).ok()?.to_rgba8();
+    let image = image::load_from_memory(include_bytes!("../assets/veil-glass-icon.png"))
+        .ok()?
+        .to_rgba8();
     let size = [image.width() as usize, image.height() as usize];
     let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
     Some(ctx.load_texture("veil-glass-logo", color, egui::TextureOptions::LINEAR))

@@ -4,7 +4,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{
-    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_TYPE, COOKIE, DNT, LOCATION, SET_COOKIE, USER_AGENT,
+    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_TYPE, COOKIE, DNT,
+    LOCATION, SET_COOKIE, USER_AGENT,
 };
 use reqwest::StatusCode;
 use url::Url;
@@ -67,13 +68,17 @@ pub struct PrivacyNetwork {
 }
 
 impl PrivacyNetwork {
-    pub fn new() -> Self { Self::new_with_storage(SharedBrowserStorage::new()) }
+    pub fn new() -> Self {
+        Self::new_with_storage(SharedBrowserStorage::new())
+    }
 
     pub fn new_with_storage(storage: SharedBrowserStorage) -> Self {
         let mut headers = HeaderMap::new();
         headers.insert(
             USER_AGENT,
-            HeaderValue::from_static("Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.0 VeilEngine/0.8.0"),
+            HeaderValue::from_static(
+                "Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.0 VeilEngine/0.8.0",
+            ),
         );
         headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.7"));
         headers.insert(DNT, HeaderValue::from_static("1"));
@@ -97,15 +102,30 @@ impl PrivacyNetwork {
         }
     }
 
-    pub fn blocker(&self) -> &Blocker { &self.blocker }
-    pub fn blocker_mut(&mut self) -> &mut Blocker { &mut self.blocker }
-    pub fn blocked_count(&self) -> usize { self.blocked_count }
+    pub fn blocker(&self) -> &Blocker {
+        &self.blocker
+    }
+    pub fn blocker_mut(&mut self) -> &mut Blocker {
+        &mut self.blocker
+    }
+    pub fn blocked_count(&self) -> usize {
+        self.blocked_count
+    }
 
-    pub fn get_document(&mut self, url: &Url, privacy: SitePrivacy) -> Result<PageResponse, String> {
+    pub fn get_document(
+        &mut self,
+        url: &Url,
+        privacy: SitePrivacy,
+    ) -> Result<PageResponse, String> {
         self.navigate_document(url, privacy, DocumentMethod::Get)
     }
 
-    pub fn post_form_document(&mut self, url: &Url, privacy: SitePrivacy, body: &str) -> Result<PageResponse, String> {
+    pub fn post_form_document(
+        &mut self,
+        url: &Url,
+        privacy: SitePrivacy,
+        body: &str,
+    ) -> Result<PageResponse, String> {
         self.navigate_document(url, privacy, DocumentMethod::PostForm(body.to_owned()))
     }
 
@@ -116,7 +136,9 @@ impl PrivacyNetwork {
         parts: Vec<MultipartPart>,
     ) -> Result<PageResponse, String> {
         let total: usize = parts.iter().map(|part| part.data.len()).sum();
-        if total > MAX_UPLOAD_BYTES { return Err("Multipart upload exceeds Veil Browser's 32 MiB safety limit.".into()); }
+        if total > MAX_UPLOAD_BYTES {
+            return Err("Multipart upload exceeds Veil Browser's 32 MiB safety limit.".into());
+        }
         self.navigate_document(url, privacy, DocumentMethod::PostMultipart(parts))
     }
 
@@ -136,7 +158,12 @@ impl PrivacyNetwork {
             if is_third_party(&initial_top_level, &current) {
                 hop_privacy.shields = true;
             }
-            self.enforce(&current, &initial_top_level, ResourceType::Document, hop_privacy)?;
+            self.enforce(
+                &current,
+                &initial_top_level,
+                ResourceType::Document,
+                hop_privacy,
+            )?;
 
             let safe_method = matches!(&method, DocumentMethod::Get);
             let mut request = match &method {
@@ -150,13 +177,22 @@ impl PrivacyNetwork {
                     let (boundary, body) = encode_multipart(parts)?;
                     self.client
                         .post(current.clone())
-                        .header(CONTENT_TYPE, format!("multipart/form-data; boundary={boundary}"))
+                        .header(
+                            CONTENT_TYPE,
+                            format!("multipart/form-data; boundary={boundary}"),
+                        )
                         .body(body)
                 }
             }
-            .header(ACCEPT, "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,*/*;q=0.5");
+            .header(
+                ACCEPT,
+                "text/html,application/xhtml+xml;q=0.9,text/plain;q=0.8,*/*;q=0.5",
+            );
 
-            if let Some(cookie) = self.storage.cookie_header_for(&initial_top_level, &current, true, safe_method) {
+            if let Some(cookie) =
+                self.storage
+                    .cookie_header_for(&initial_top_level, &current, true, safe_method)
+            {
                 request = request.header(COOKIE, cookie);
             }
             let response = request.send().map_err(|e| format!("Network error: {e}"))?;
@@ -177,7 +213,9 @@ impl PrivacyNetwork {
 
             let final_url = response.url().clone();
             let status = response.status();
-            if !status.is_success() { return Err(format!("Server returned HTTP {status}")); }
+            if !status.is_success() {
+                return Err(format!("Server returned HTTP {status}"));
+            }
 
             let content_type = content_type(&response);
             if !content_type.is_empty()
@@ -197,12 +235,36 @@ impl PrivacyNetwork {
         Err("Too many redirects.".into())
     }
 
-    pub fn get_stylesheet(&mut self, top_level: &Url, url: &Url, privacy: SitePrivacy) -> Result<TextResponse, String> {
-        self.get_text_subresource(top_level, url, privacy, ResourceType::Stylesheet, "text/css,*/*;q=0.1", MAX_STYLESHEET_BYTES)
+    pub fn get_stylesheet(
+        &mut self,
+        top_level: &Url,
+        url: &Url,
+        privacy: SitePrivacy,
+    ) -> Result<TextResponse, String> {
+        self.get_text_subresource(
+            top_level,
+            url,
+            privacy,
+            ResourceType::Stylesheet,
+            "text/css,*/*;q=0.1",
+            MAX_STYLESHEET_BYTES,
+        )
     }
 
-    pub fn get_script(&mut self, top_level: &Url, url: &Url, privacy: SitePrivacy) -> Result<TextResponse, String> {
-        self.get_text_subresource(top_level, url, privacy, ResourceType::Script, "text/javascript,application/javascript,*/*;q=0.1", MAX_SCRIPT_BYTES)
+    pub fn get_script(
+        &mut self,
+        top_level: &Url,
+        url: &Url,
+        privacy: SitePrivacy,
+    ) -> Result<TextResponse, String> {
+        self.get_text_subresource(
+            top_level,
+            url,
+            privacy,
+            ResourceType::Script,
+            "text/javascript,application/javascript,*/*;q=0.1",
+            MAX_SCRIPT_BYTES,
+        )
     }
 
     fn get_text_subresource(
@@ -214,11 +276,20 @@ impl PrivacyNetwork {
         accept: &str,
         limit: usize,
     ) -> Result<TextResponse, String> {
-        let response = self.get_binary_subresource(top_level, url, privacy, resource_type, accept, limit)?;
-        Ok(TextResponse { final_url: response.final_url, body: String::from_utf8_lossy(&response.bytes).into_owned() })
+        let response =
+            self.get_binary_subresource(top_level, url, privacy, resource_type, accept, limit)?;
+        Ok(TextResponse {
+            final_url: response.final_url,
+            body: String::from_utf8_lossy(&response.bytes).into_owned(),
+        })
     }
 
-    pub fn get_font(&mut self, top_level: &Url, url: &Url, privacy: SitePrivacy) -> Result<BinaryResponse, String> {
+    pub fn get_font(
+        &mut self,
+        top_level: &Url,
+        url: &Url,
+        privacy: SitePrivacy,
+    ) -> Result<BinaryResponse, String> {
         self.get_binary_subresource(
             top_level,
             url,
@@ -229,8 +300,20 @@ impl PrivacyNetwork {
         )
     }
 
-    pub fn get_media(&mut self, top_level: &Url, url: &Url, privacy: SitePrivacy) -> Result<BinaryResponse, String> {
-        self.get_binary_subresource(top_level, url, privacy, ResourceType::Media, "video/*,audio/*,*/*;q=0.2", MAX_MEDIA_BYTES)
+    pub fn get_media(
+        &mut self,
+        top_level: &Url,
+        url: &Url,
+        privacy: SitePrivacy,
+    ) -> Result<BinaryResponse, String> {
+        self.get_binary_subresource(
+            top_level,
+            url,
+            privacy,
+            ResourceType::Media,
+            "video/*,audio/*,*/*;q=0.2",
+            MAX_MEDIA_BYTES,
+        )
     }
 
     fn get_binary_subresource(
@@ -247,10 +330,15 @@ impl PrivacyNetwork {
         for _ in 0..=MAX_REDIRECTS {
             self.enforce(&current, top_level, resource_type, privacy)?;
             let mut request = self.client.get(current.clone()).header(ACCEPT, accept);
-            if let Some(cookie) = self.storage.cookie_header_for(top_level, &current, false, true) {
+            if let Some(cookie) = self
+                .storage
+                .cookie_header_for(top_level, &current, false, true)
+            {
                 request = request.header(COOKIE, cookie);
             }
-            let response = request.send().map_err(|e| format!("Subresource request failed: {e}"))?;
+            let response = request
+                .send()
+                .map_err(|e| format!("Subresource request failed: {e}"))?;
             self.store_response_cookies(top_level, &current, &response);
             if is_redirect(response.status()) {
                 current = resolve_redirect(&current, &response)?;
@@ -258,16 +346,30 @@ impl PrivacyNetwork {
             }
             let final_url = response.url().clone();
             let status = response.status();
-            if !status.is_success() { return Err(format!("Subresource returned HTTP {status}")); }
+            if !status.is_success() {
+                return Err(format!("Subresource returned HTTP {status}"));
+            }
             let response_type = content_type(&response);
-            let bytes = read_limited(response, limit).map_err(|e| format!("Failed to read subresource: {e}"))?;
-            return Ok(BinaryResponse { final_url, bytes, content_type: response_type });
+            let bytes = read_limited(response, limit)
+                .map_err(|e| format!("Failed to read subresource: {e}"))?;
+            return Ok(BinaryResponse {
+                final_url,
+                bytes,
+                content_type: response_type,
+            });
         }
         Err("Too many subresource redirects.".into())
     }
 
-    pub fn get_image(&mut self, top_level: &Url, url: &Url, privacy: SitePrivacy) -> Result<ImageResponse, String> {
-        if !privacy.load_images { return Err("Images are disabled for this site.".into()); }
+    pub fn get_image(
+        &mut self,
+        top_level: &Url,
+        url: &Url,
+        privacy: SitePrivacy,
+    ) -> Result<ImageResponse, String> {
+        if !privacy.load_images {
+            return Err("Images are disabled for this site.".into());
+        }
         let response = self.get_binary_subresource(
             top_level,
             url,
@@ -277,29 +379,52 @@ impl PrivacyNetwork {
             MAX_IMAGE_BYTES,
         )?;
         if !response.content_type.is_empty() && !response.content_type.starts_with("image/") {
-            return Err(format!("Blocked non-image response: {}", response.content_type));
+            return Err(format!(
+                "Blocked non-image response: {}",
+                response.content_type
+            ));
         }
-        Ok(ImageResponse { final_url: response.final_url, bytes: response.bytes })
+        Ok(ImageResponse {
+            final_url: response.final_url,
+            bytes: response.bytes,
+        })
     }
 
     fn store_response_cookies(&self, top_level: &Url, request: &Url, response: &Response) {
         for value in response.headers().get_all(SET_COOKIE).iter() {
-            if let Ok(header) = value.to_str() { self.storage.store_set_cookie(top_level, request, header); }
+            if let Ok(header) = value.to_str() {
+                self.storage.store_set_cookie(top_level, request, header);
+            }
         }
     }
 
-    fn enforce(&mut self, request: &Url, top_level: &Url, resource_type: ResourceType, privacy: SitePrivacy) -> Result<(), String> {
-        let third_party = resource_type != ResourceType::Document && is_third_party(top_level, request);
+    fn enforce(
+        &mut self,
+        request: &Url,
+        top_level: &Url,
+        resource_type: ResourceType,
+        privacy: SitePrivacy,
+    ) -> Result<(), String> {
+        let third_party =
+            resource_type != ResourceType::Document && is_third_party(top_level, request);
         if privacy.block_third_party && third_party {
             let reason = "third-party subresource blocked";
             self.record_block(request, reason, resource_type);
             return Err(reason.into());
         }
         if privacy.shields {
-            let decision = self.blocker.check(&BlockContext { url: request, top_level, resource_type, third_party });
+            let decision = self.blocker.check(&BlockContext {
+                url: request,
+                top_level,
+                resource_type,
+                third_party,
+            });
             if decision.blocked {
                 self.record_block(request, &decision.reason, resource_type);
-                return Err(format!("Privacy Shield blocked request ({})", decision.reason));
+                return Err(format!(
+                    "Privacy Shield blocked request ({})",
+                    decision.reason
+                ));
             }
         }
         Ok(())
@@ -313,17 +438,24 @@ impl PrivacyNetwork {
     }
 
     pub fn take_blocked_events(&mut self) -> Vec<String> {
-        if let Ok(mut events) = self.blocked_events.lock() { return std::mem::take(&mut *events); }
+        if let Ok(mut events) = self.blocked_events.lock() {
+            return std::mem::take(&mut *events);
+        }
         Vec::new()
     }
 }
 
 fn encode_multipart(parts: &[MultipartPart]) -> Result<(String, Vec<u8>), String> {
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     let boundary = format!("----VeilBrowserBoundary{nonce:x}");
     let mut body = Vec::new();
     for part in parts {
-        if part.data.len() > MAX_UPLOAD_BYTES || body.len().saturating_add(part.data.len()) > MAX_UPLOAD_BYTES {
+        if part.data.len() > MAX_UPLOAD_BYTES
+            || body.len().saturating_add(part.data.len()) > MAX_UPLOAD_BYTES
+        {
             return Err("Multipart upload exceeds Veil Browser's 32 MiB safety limit.".into());
         }
         body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
@@ -332,11 +464,16 @@ fn encode_multipart(parts: &[MultipartPart]) -> Result<(String, Vec<u8>), String
             Some(filename) => {
                 let filename = escape_disposition(filename);
                 body.extend_from_slice(format!("Content-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n").as_bytes());
-                let content_type = part.content_type.as_deref().unwrap_or("application/octet-stream");
+                let content_type = part
+                    .content_type
+                    .as_deref()
+                    .unwrap_or("application/octet-stream");
                 body.extend_from_slice(format!("Content-Type: {content_type}\r\n\r\n").as_bytes());
             }
             None => {
-                body.extend_from_slice(format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes());
+                body.extend_from_slice(
+                    format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+                );
             }
         }
         body.extend_from_slice(&part.data);
@@ -347,31 +484,62 @@ fn encode_multipart(parts: &[MultipartPart]) -> Result<(String, Vec<u8>), String
 }
 
 fn escape_disposition(value: &str) -> String {
-    value.chars().filter(|ch| !matches!(ch, '\r' | '\n' | '\0')).collect::<String>().replace('"', "'")
+    value
+        .chars()
+        .filter(|ch| !matches!(ch, '\r' | '\n' | '\0'))
+        .collect::<String>()
+        .replace('"', "'")
 }
 
 fn validate_http_url(url: &Url) -> Result<(), String> {
-    match url.scheme() { "http" | "https" => Ok(()), _ => Err("Only HTTP and HTTPS are supported.".into()) }
+    match url.scheme() {
+        "http" | "https" => Ok(()),
+        _ => Err("Only HTTP and HTTPS are supported.".into()),
+    }
 }
 
 fn content_type(response: &Response) -> String {
-    response.headers().get(reqwest::header::CONTENT_TYPE).and_then(|value| value.to_str().ok()).unwrap_or("").to_ascii_lowercase()
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase()
 }
 
 fn is_redirect(status: StatusCode) -> bool {
-    matches!(status, StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND | StatusCode::SEE_OTHER | StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT)
+    matches!(
+        status,
+        StatusCode::MOVED_PERMANENTLY
+            | StatusCode::FOUND
+            | StatusCode::SEE_OTHER
+            | StatusCode::TEMPORARY_REDIRECT
+            | StatusCode::PERMANENT_REDIRECT
+    )
 }
 
 fn resolve_redirect(base: &Url, response: &Response) -> Result<Url, String> {
-    let location = response.headers().get(LOCATION).and_then(|value| value.to_str().ok()).ok_or_else(|| "Redirect response had no valid Location header.".to_owned())?;
-    base.join(location).map_err(|e| format!("Invalid redirect target: {e}"))
+    let location = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| "Redirect response had no valid Location header.".to_owned())?;
+    base.join(location)
+        .map_err(|e| format!("Invalid redirect target: {e}"))
 }
 
 fn read_limited(response: Response, limit: usize) -> Result<Vec<u8>, String> {
     let mut reader = response.take((limit + 1) as u64);
     let mut bytes = Vec::with_capacity(limit.min(256 * 1024));
-    reader.read_to_end(&mut bytes).map_err(|e| format!("response read failed: {e}"))?;
-    if bytes.len() > limit { return Err(format!("response exceeds {} MiB safety limit", limit / (1024 * 1024))); }
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("response read failed: {e}"))?;
+    if bytes.len() > limit {
+        return Err(format!(
+            "response exceeds {} MiB safety limit",
+            limit / (1024 * 1024)
+        ));
+    }
     Ok(bytes)
 }
 
@@ -382,8 +550,18 @@ mod tests {
     #[test]
     fn multipart_encoder_emits_file_and_text_parts() {
         let parts = vec![
-            MultipartPart { name: "q".into(), filename: None, content_type: None, data: b"hello".to_vec() },
-            MultipartPart { name: "upload".into(), filename: Some("a.txt".into()), content_type: Some("text/plain".into()), data: b"abc".to_vec() },
+            MultipartPart {
+                name: "q".into(),
+                filename: None,
+                content_type: None,
+                data: b"hello".to_vec(),
+            },
+            MultipartPart {
+                name: "upload".into(),
+                filename: Some("a.txt".into()),
+                content_type: Some("text/plain".into()),
+                data: b"abc".to_vec(),
+            },
         ];
         let (boundary, body) = encode_multipart(&parts).unwrap();
         let text = String::from_utf8_lossy(&body);

@@ -99,7 +99,8 @@ impl JavascriptSandbox {
                 ..ScriptReport::default()
             };
         }
-        let (_, report) = LiveJavascriptRuntime::new(dom, external_sources, external_discovered, storage);
+        let (_, report) =
+            LiveJavascriptRuntime::new(dom, external_sources, external_discovered, storage);
         report
     }
 }
@@ -116,8 +117,13 @@ impl LiveJavascriptRuntime {
             .iter()
             .enumerate()
             .filter_map(|(idx, node)| {
-                let NodeKind::Element(el) = &node.kind else { return None; };
-                if el.tag != "script" || el.attrs.contains_key("src") || !is_executable_script(el.attrs.get("type").map(String::as_str)) {
+                let NodeKind::Element(el) = &node.kind else {
+                    return None;
+                };
+                if el.tag != "script"
+                    || el.attrs.contains_key("src")
+                    || !is_executable_script(el.attrs.get("type").map(String::as_str))
+                {
                     return None;
                 }
                 Some(dom.text_content(idx))
@@ -160,7 +166,8 @@ impl LiveJavascriptRuntime {
         for source in inline_sources.iter().chain(external_sources.iter()) {
             if source.len() > 2_000_000 {
                 runtime.errors += 1;
-                runtime.last_error = Some("Script skipped because it exceeded the per-script safety limit.".into());
+                runtime.last_error =
+                    Some("Script skipped because it exceeded the per-script safety limit.".into());
                 continue;
             }
             match runtime.context.eval(Source::from_bytes(source.as_str())) {
@@ -229,20 +236,35 @@ impl LiveJavascriptRuntime {
         report.errors = self.errors;
         report.last_error = self.last_error.clone();
         report.storage = fallback_storage.clone();
-        report.dom_content_loaded_dispatched = eval_bool(&mut self.context, "!!__vvDOMContentLoaded").unwrap_or(false);
+        report.dom_content_loaded_dispatched =
+            eval_bool(&mut self.context, "!!__vvDOMContentLoaded").unwrap_or(false);
         report.load_dispatched = eval_bool(&mut self.context, "!!__vvLoaded").unwrap_or(false);
-        report.title_override = eval_string(&mut self.context, "String(document.title || '')").filter(|value| !value.trim().is_empty());
-        report.body_html_override = eval_string(&mut self.context, "String(document.body && document.body.__vvExplicitInnerHTML || '')").filter(|value| !value.trim().is_empty());
+        report.title_override = eval_string(&mut self.context, "String(document.title || '')")
+            .filter(|value| !value.trim().is_empty());
+        report.body_html_override = eval_string(
+            &mut self.context,
+            "String(document.body && document.body.__vvExplicitInnerHTML || '')",
+        )
+        .filter(|value| !value.trim().is_empty());
         if let Some(console) = eval_string(&mut self.context, "__vvConsole.join('\\n')") {
             report.console = console.lines().take(120).map(str::to_owned).collect();
         }
-        report.dom_mutations = eval_json(&mut self.context, "JSON.stringify(__vvMutations)").unwrap_or_default();
-        report.canvas_commands = eval_json(&mut self.context, "JSON.stringify(__vvCanvasCommands)").unwrap_or_default();
-        report.cookie_writes = eval_json(&mut self.context, "JSON.stringify(__vvCookieWrites)").unwrap_or_default();
-        report.storage.local = eval_json(&mut self.context, "JSON.stringify(localStorage.__dump())").unwrap_or_default();
-        report.storage.session = eval_json(&mut self.context, "JSON.stringify(sessionStorage.__dump())").unwrap_or_default();
-        report.live_node_count = eval_usize(&mut self.context, "__vvAllNodes.length").unwrap_or_default();
-        report.event_listener_count = eval_usize(&mut self.context, "__vvListenerCount").unwrap_or_default();
+        report.dom_mutations =
+            eval_json(&mut self.context, "JSON.stringify(__vvMutations)").unwrap_or_default();
+        report.canvas_commands =
+            eval_json(&mut self.context, "JSON.stringify(__vvCanvasCommands)").unwrap_or_default();
+        report.cookie_writes =
+            eval_json(&mut self.context, "JSON.stringify(__vvCookieWrites)").unwrap_or_default();
+        report.storage.local =
+            eval_json(&mut self.context, "JSON.stringify(localStorage.__dump())")
+                .unwrap_or_default();
+        report.storage.session =
+            eval_json(&mut self.context, "JSON.stringify(sessionStorage.__dump())")
+                .unwrap_or_default();
+        report.live_node_count =
+            eval_usize(&mut self.context, "__vvAllNodes.length").unwrap_or_default();
+        report.event_listener_count =
+            eval_usize(&mut self.context, "__vvListenerCount").unwrap_or_default();
         report
     }
 }
@@ -250,19 +272,28 @@ impl LiveJavascriptRuntime {
 fn build_dom_registration(dom: &Dom) -> String {
     let mut out = String::new();
     for (idx, node) in dom.nodes.iter().enumerate() {
-        let NodeKind::Element(el) = &node.kind else { continue; };
-        if el.tag == "document" { continue; }
+        let NodeKind::Element(el) = &node.kind else {
+            continue;
+        };
+        if el.tag == "document" {
+            continue;
+        }
         let key_json = serde_json::to_string(&format!("n{idx}")).unwrap();
-        let id_json = serde_json::to_string(el.attrs.get("id").map(String::as_str).unwrap_or("")).unwrap();
+        let id_json =
+            serde_json::to_string(el.attrs.get("id").map(String::as_str).unwrap_or("")).unwrap();
         let tag_json = serde_json::to_string(&el.tag).unwrap_or_else(|_| "\"div\"".into());
-        let text_json = serde_json::to_string(&dom.text_content(idx)).unwrap_or_else(|_| "\"\"".into());
+        let text_json =
+            serde_json::to_string(&dom.text_content(idx)).unwrap_or_else(|_| "\"\"".into());
         let attrs_json = serde_json::to_string(&el.attrs).unwrap_or_else(|_| "{}".into());
         let parent_json = nearest_element_parent(dom, idx)
             .map(|parent| serde_json::to_string(&format!("n{parent}")).unwrap())
             .unwrap_or_else(|| "null".into());
         out.push_str(&format!("__vvRegisterElement({key_json},{id_json},{tag_json},{text_json},{attrs_json},{parent_json});\n"));
     }
-    let title = dom.find_first_tag("title").map(|idx| dom.text_content(idx)).unwrap_or_default();
+    let title = dom
+        .find_first_tag("title")
+        .map(|idx| dom.text_content(idx))
+        .unwrap_or_default();
     let title_json = serde_json::to_string(&title).unwrap_or_else(|_| "\"\"".into());
     out.push_str(&format!("__vvFinalizeDom();document.title={title_json};\n"));
     out
@@ -281,7 +312,10 @@ fn nearest_element_parent(dom: &Dom, idx: usize) -> Option<usize> {
 
 fn eval_string(context: &mut Context, source: &str) -> Option<String> {
     let value = context.eval(Source::from_bytes(source)).ok()?;
-    value.to_string(context).ok().map(|text| text.to_std_string_escaped())
+    value
+        .to_string(context)
+        .ok()
+        .map(|text| text.to_std_string_escaped())
 }
 
 fn eval_bool(context: &mut Context, source: &str) -> Option<bool> {
@@ -291,7 +325,10 @@ fn eval_bool(context: &mut Context, source: &str) -> Option<bool> {
 
 fn eval_usize(context: &mut Context, source: &str) -> Option<usize> {
     let value = context.eval(Source::from_bytes(source)).ok()?;
-    value.to_number(context).ok().map(|number| number.max(0.0) as usize)
+    value
+        .to_number(context)
+        .ok()
+        .map(|number| number.max(0.0) as usize)
 }
 
 fn eval_json<T: for<'de> Deserialize<'de>>(context: &mut Context, source: &str) -> Option<T> {
@@ -300,9 +337,17 @@ fn eval_json<T: for<'de> Deserialize<'de>>(context: &mut Context, source: &str) 
 }
 
 fn is_executable_script(kind: Option<&str>) -> bool {
-    let Some(kind) = kind.map(str::trim).filter(|value| !value.is_empty()) else { return true; };
-    matches!(kind.to_ascii_lowercase().as_str(),
-        "text/javascript" | "application/javascript" | "application/ecmascript" | "text/ecmascript" | "module")
+    let Some(kind) = kind.map(str::trim).filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    matches!(
+        kind.to_ascii_lowercase().as_str(),
+        "text/javascript"
+            | "application/javascript"
+            | "application/ecmascript"
+            | "text/ecmascript"
+            | "module"
+    )
 }
 
 const JS_PRELUDE: &str = r#"
@@ -483,12 +528,19 @@ mod tests {
     #[test]
     fn vm_runs_dom_events_storage_and_canvas() {
         let dom = Dom::parse("<canvas id='c'></canvas><p id='msg'>Old</p><script>document.addEventListener('DOMContentLoaded',()=>{document.getElementById('msg').textContent='New';localStorage.setItem('k','v');let c=document.getElementById('c').getContext('2d');c.fillStyle='#ff0000';c.fillRect(1,2,3,4)});document.title='Safe';console.log('ok')</script>");
-        let report = JavascriptSandbox::default().run(&dom, true, &[], 0, &ScriptStorageSnapshot::default());
+        let report =
+            JavascriptSandbox::default().run(&dom, true, &[], 0, &ScriptStorageSnapshot::default());
         assert_eq!(report.title_override.as_deref(), Some("Safe"));
         assert_eq!(report.console, vec!["ok".to_owned()]);
         assert_eq!(report.storage.local.get("k").map(String::as_str), Some("v"));
-        assert!(report.dom_mutations.iter().any(|mutation| mutation.value == "New"));
-        assert!(report.canvas_commands.iter().any(|command| command.canvas_id == "c" && command.op == "fillRect"));
+        assert!(report
+            .dom_mutations
+            .iter()
+            .any(|mutation| mutation.value == "New"));
+        assert!(report
+            .canvas_commands
+            .iter()
+            .any(|command| command.canvas_id == "c" && command.op == "fillRect"));
         assert!(report.dom_content_loaded_dispatched);
         assert!(report.live_node_count >= 2);
     }
@@ -496,14 +548,21 @@ mod tests {
     #[test]
     fn events_capture_then_bubble() {
         let dom = Dom::parse("<div id='outer'><button id='inner'>Go</button></div><script>let o=document.getElementById('outer'),i=document.getElementById('inner');o.addEventListener('click',()=>console.log('capture'),true);i.addEventListener('click',()=>console.log('target'));o.addEventListener('click',()=>console.log('bubble'));i.click()</script>");
-        let report = JavascriptSandbox::default().run(&dom, true, &[], 0, &ScriptStorageSnapshot::default());
+        let report =
+            JavascriptSandbox::default().run(&dom, true, &[], 0, &ScriptStorageSnapshot::default());
         assert_eq!(report.console, vec!["capture", "target", "bubble"]);
     }
 
     #[test]
     fn javascript_can_be_disabled_per_site() {
         let dom = Dom::parse("<script>document.title='Nope'</script>");
-        let report = JavascriptSandbox::default().run(&dom, false, &[], 0, &ScriptStorageSnapshot::default());
+        let report = JavascriptSandbox::default().run(
+            &dom,
+            false,
+            &[],
+            0,
+            &ScriptStorageSnapshot::default(),
+        );
         assert!(report.title_override.is_none());
         assert_eq!(report.discovered, 1);
     }

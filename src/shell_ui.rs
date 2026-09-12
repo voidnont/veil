@@ -6,13 +6,13 @@ use veil_engine::style::{ComputedStyle, JustifyContent, LayoutMode};
 
 use crate::{PendingNavigation, VeilApp, COLLAPSED_DOCK_WIDTH, EXPANDED_DOCK_WIDTH, HOME};
 
-const SHELL_BG: Color32 = Color32::from_rgb(10, 11, 14);
-const SIDEBAR_BG: Color32 = Color32::from_rgba_premultiplied(18, 19, 24, 248);
-const TOOLBAR_BG: Color32 = Color32::from_rgba_premultiplied(20, 21, 27, 250);
-const PAGE_BG: Color32 = Color32::from_rgb(15, 16, 20);
-const SURFACE: Color32 = Color32::from_rgba_premultiplied(10, 10, 10, 10);
-const SURFACE_HOVER: Color32 = Color32::from_rgba_premultiplied(18, 18, 18, 18);
-const BORDER: Color32 = Color32::from_rgba_premultiplied(22, 22, 22, 22);
+const SHELL_BG: Color32 = Color32::TRANSPARENT;
+const SIDEBAR_BG: Color32 = Color32::from_rgba_premultiplied(11, 12, 16, 150);
+const TOOLBAR_BG: Color32 = Color32::from_rgba_premultiplied(13, 14, 19, 164);
+const PAGE_BG: Color32 = Color32::from_rgba_premultiplied(9, 10, 13, 134);
+const SURFACE: Color32 = Color32::from_rgba_premultiplied(14, 14, 16, 22);
+const SURFACE_HOVER: Color32 = Color32::from_rgba_premultiplied(22, 22, 25, 36);
+const BORDER: Color32 = Color32::from_rgba_premultiplied(38, 38, 42, 48);
 const TEXT_MUTED: Color32 = Color32::from_gray(145);
 const ACCENT: Color32 = Color32::from_rgb(150, 121, 234);
 const ACTIVE: Color32 = Color32::from_rgba_premultiplied(20, 16, 31, 34);
@@ -48,7 +48,7 @@ fn workspace_glyph(index: usize) -> &'static str {
 }
 
 pub(crate) fn render_content(app: &mut VeilApp, ctx: &egui::Context) {
-    let sidebar = sidebar_width(app, ctx);
+    let sidebar = COLLAPSED_DOCK_WIDTH;
     egui::CentralPanel::default()
         .frame(egui::Frame::default().fill(SHELL_BG))
         .show(ctx, |ui| {
@@ -103,8 +103,9 @@ pub(crate) fn render_sidebar(app: &mut VeilApp, ctx: &egui::Context) {
                     ui.horizontal(|ui| {
                         let logo_size = 32.0;
                         if let Some(logo_id) = app.logo.as_ref().map(|logo| logo.id()) {
-                            let logo = egui::Image::new((logo_id, egui::vec2(logo_size, logo_size)))
-                                .sense(Sense::click());
+                            let logo =
+                                egui::Image::new((logo_id, egui::vec2(logo_size, logo_size)))
+                                    .sense(Sense::click());
                             if ui.add(logo).on_hover_text("Veil home").clicked() {
                                 let active = app.active_tab;
                                 app.navigate_tab(active, HOME.into(), true);
@@ -127,16 +128,22 @@ pub(crate) fn render_sidebar(app: &mut VeilApp, ctx: &egui::Context) {
                                         .color(TEXT_MUTED),
                                 );
                             });
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let pin = if app.sidebar_pinned { "◆" } else { "◇" };
-                                if ui
-                                    .add_sized([28.0, 28.0], egui::Button::new(pin).frame(false))
-                                    .on_hover_text("Keep sidebar open")
-                                    .clicked()
-                                {
-                                    app.sidebar_pinned = !app.sidebar_pinned;
-                                }
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let pin = if app.sidebar_pinned { "◆" } else { "◇" };
+                                    if ui
+                                        .add_sized(
+                                            [28.0, 28.0],
+                                            egui::Button::new(pin).frame(false),
+                                        )
+                                        .on_hover_text("Keep sidebar open")
+                                        .clicked()
+                                    {
+                                        app.sidebar_pinned = !app.sidebar_pinned;
+                                    }
+                                },
+                            );
                         }
                     });
 
@@ -183,11 +190,13 @@ pub(crate) fn render_sidebar(app: &mut VeilApp, ctx: &egui::Context) {
                                     .add_sized(
                                         [34.0, 28.0],
                                         egui::Button::new(
-                                            RichText::new(workspace_glyph(index)).color(if active {
-                                                ACCENT
-                                            } else {
-                                                Color32::from_gray(155)
-                                            }),
+                                            RichText::new(workspace_glyph(index)).color(
+                                                if active {
+                                                    ACCENT
+                                                } else {
+                                                    Color32::from_gray(155)
+                                                },
+                                            ),
                                         )
                                         .frame(false),
                                     )
@@ -207,15 +216,21 @@ pub(crate) fn render_sidebar(app: &mut VeilApp, ctx: &egui::Context) {
                     if expanded {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("Tabs").small().color(TEXT_MUTED));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if ui
-                                    .add_sized([28.0, 28.0], egui::Button::new("+").frame(false))
-                                    .on_hover_text("New tab · Ctrl+T")
-                                    .clicked()
-                                {
-                                    app.new_tab();
-                                }
-                            });
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add_sized(
+                                            [28.0, 28.0],
+                                            egui::Button::new("+").frame(false),
+                                        )
+                                        .on_hover_text("New tab · Ctrl+T")
+                                        .clicked()
+                                    {
+                                        app.new_tab();
+                                    }
+                                },
+                            );
                         });
                     }
 
@@ -271,13 +286,13 @@ pub(crate) fn render_sidebar(app: &mut VeilApp, ctx: &egui::Context) {
                                                     .add_sized(
                                                         [(width - 100.0).max(92.0), 32.0],
                                                         egui::Button::new(
-                                                            RichText::new(label)
-                                                                .size(12.5)
-                                                                .color(if active {
+                                                            RichText::new(label).size(12.5).color(
+                                                                if active {
                                                                     Color32::WHITE
                                                                 } else {
                                                                     Color32::from_gray(195)
-                                                                }),
+                                                                },
+                                                            ),
                                                         )
                                                         .frame(false),
                                                     )
@@ -310,12 +325,9 @@ pub(crate) fn render_sidebar(app: &mut VeilApp, ctx: &egui::Context) {
 
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                         if expanded {
-                            let status = crate::truncate_title(&app.tabs[app.active_tab].status, 48);
-                            ui.label(
-                                RichText::new(status)
-                                    .small()
-                                    .color(Color32::from_gray(112)),
-                            );
+                            let status =
+                                crate::truncate_title(&app.tabs[app.active_tab].status, 48);
+                            ui.label(RichText::new(status).small().color(Color32::from_gray(112)));
                             ui.add_space(4.0);
                         }
                         ui.horizontal(|ui| {
@@ -346,13 +358,74 @@ pub(crate) fn render_sidebar(app: &mut VeilApp, ctx: &egui::Context) {
         });
 }
 
+pub(crate) fn render_window_chrome(app: &mut VeilApp, ctx: &egui::Context) {
+    let screen = ctx.screen_rect();
+
+    egui::Area::new(egui::Id::new("veil_window_drag_strip"))
+        .order(egui::Order::Background)
+        .fixed_pos(egui::pos2(0.0, 0.0))
+        .show(ctx, |ui| {
+            let response =
+                ui.allocate_response(egui::vec2(screen.width(), 9.0), Sense::click_and_drag());
+            if response.drag_started() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            }
+        });
+
+    if !app.window_controls_revealed {
+        return;
+    }
+
+    let width = 126.0;
+    let x = (screen.right() - width - 10.0).max(0.0);
+    egui::Area::new(egui::Id::new("veil_window_controls"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(egui::pos2(x, 8.0))
+        .show(ctx, |ui| {
+            egui::Frame::default()
+                .fill(Color32::from_rgba_unmultiplied(17, 18, 24, 172))
+                .stroke(egui::Stroke::new(
+                    1.0_f32,
+                    Color32::from_rgba_unmultiplied(255, 255, 255, 34),
+                ))
+                .corner_radius(13)
+                .inner_margin(3)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_sized([34.0, 30.0], egui::Button::new("—").frame(false))
+                            .on_hover_text("Minimize")
+                            .clicked()
+                        {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+                        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                        if ui
+                            .add_sized(
+                                [34.0, 30.0],
+                                egui::Button::new(if maximized { "❐" } else { "□" }).frame(false),
+                            )
+                            .on_hover_text(if maximized { "Restore" } else { "Maximize" })
+                            .clicked()
+                        {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                        }
+                        if ui
+                            .add_sized([34.0, 30.0], egui::Button::new("×").frame(false))
+                            .on_hover_text("Close")
+                            .clicked()
+                        {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
+                });
+        });
+}
+
 pub(crate) fn render_address_pill(app: &mut VeilApp, ctx: &egui::Context) {
     let screen = ctx.screen_rect();
-    let sidebar = sidebar_width(app, ctx);
-    let left = sidebar + 28.0;
-    let available = (screen.width() - left - 20.0).max(360.0);
-    let width = available.min(980.0);
-    let x = left + (available - width) * 0.5;
+    let width = (screen.width() - 180.0).clamp(420.0, 980.0);
+    let x = screen.center().x - width * 0.5;
     let address_id = egui::Id::new("veil_address_bar");
     let focused = ctx.memory(|memory| memory.has_focus(address_id));
 
@@ -423,9 +496,7 @@ pub(crate) fn render_address_pill(app: &mut VeilApp, ctx: &egui::Context) {
                                     .frame(false),
                             )
                         };
-                        if response.lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                        {
+                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                             navigation = Some(app.tabs[app.active_tab].address.clone());
                         }
 
@@ -512,9 +583,7 @@ fn render_page(
             ui.horizontal(|ui| {
                 ui.add_space(if split { 8.0 } else { 12.0 });
                 ui.vertical(|ui| {
-                    ui.set_max_width(
-                        (viewport_width - if split { 16.0 } else { 24.0 }).max(280.0),
-                    );
+                    ui.set_max_width((viewport_width - if split { 16.0 } else { 24.0 }).max(280.0));
                     for block in &page.blocks {
                         render_visual_block(
                             app,
@@ -569,14 +638,7 @@ fn render_visual_block(
                     LayoutMode::Block | LayoutMode::FlexColumn => {
                         for (index, child) in ordered.iter().enumerate() {
                             render_visual_block(
-                                app,
-                                ctx,
-                                ui,
-                                tab_index,
-                                child,
-                                base_url,
-                                privacy,
-                                navigation,
+                                app, ctx, ui, tab_index, child, base_url, privacy, navigation,
                             );
                             if index + 1 < ordered.len() && style.gap > 0.0 {
                                 ui.add_space(style.gap);
@@ -587,14 +649,7 @@ fn render_visual_block(
                         let mut paint = |ui: &mut egui::Ui| {
                             for (index, child) in ordered.iter().enumerate() {
                                 render_visual_block(
-                                    app,
-                                    ctx,
-                                    ui,
-                                    tab_index,
-                                    child,
-                                    base_url,
-                                    privacy,
-                                    navigation,
+                                    app, ctx, ui, tab_index, child, base_url, privacy, navigation,
                                 );
                                 if index + 1 < ordered.len() && style.gap > 0.0 {
                                     ui.add_space(style.gap);
@@ -618,13 +673,7 @@ fn render_visual_block(
                             .show(ui, |ui| {
                                 for (index, child) in children.iter().enumerate() {
                                     render_visual_block(
-                                        app,
-                                        ctx,
-                                        ui,
-                                        tab_index,
-                                        child,
-                                        base_url,
-                                        privacy,
+                                        app, ctx, ui, tab_index, child, base_url, privacy,
                                         navigation,
                                     );
                                     if (index + 1) % columns == 0 {
@@ -664,24 +713,12 @@ fn render_visual_block(
             });
         }
         _ => {
-            app.render_block(
-                ctx,
-                ui,
-                tab_index,
-                block,
-                base_url,
-                privacy,
-                navigation,
-            );
+            app.render_block(ctx, ui, tab_index, block, base_url, privacy, navigation);
         }
     }
 }
 
-fn visual_box(
-    ui: &mut egui::Ui,
-    style: &ComputedStyle,
-    add_contents: impl FnOnce(&mut egui::Ui),
-) {
+fn visual_box(ui: &mut egui::Ui, style: &ComputedStyle, add_contents: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(style.margin.top.max(0.0));
     let avail = ui.available_width().max(1.0);
     let side_margin = style.margin.left.max(0.0) + style.margin.right.max(0.0);
@@ -696,8 +733,8 @@ fn visual_box(
 
     ui.horizontal(|ui| {
         ui.add_space(style.margin.left.max(0.0));
-        let mut frame = egui::Frame::default()
-            .corner_radius(style.border_radius.clamp(0.0, 32.0) as u8);
+        let mut frame =
+            egui::Frame::default().corner_radius(style.border_radius.clamp(0.0, 32.0) as u8);
         if let Some(background) = style.background {
             frame = frame.fill(crate::to_color32(background));
         }
@@ -723,10 +760,9 @@ fn visual_box(
             ui.horizontal(|ui| {
                 ui.add_space(style.padding.left.max(0.0));
                 ui.vertical(|ui| {
-                    let inner = (width
-                        - style.padding.left.max(0.0)
-                        - style.padding.right.max(0.0))
-                    .max(1.0);
+                    let inner =
+                        (width - style.padding.left.max(0.0) - style.padding.right.max(0.0))
+                            .max(1.0);
                     ui.set_max_width(inner);
                     add_contents(ui);
                 });

@@ -5,7 +5,7 @@ use veil_engine::blocker::Blocker;
 use veil_engine::dom::Dom;
 use veil_engine::engine::{DocumentView, Engine};
 use veil_engine::renderer_protocol::{
-    RendererCommand, RendererReply, RenderRequest, RuntimeUpdate,
+    RenderRequest, RendererCommand, RendererReply, RuntimeUpdate,
 };
 use veil_engine::script::{JavascriptSandbox, LiveJavascriptRuntime, ScriptReport};
 
@@ -28,7 +28,9 @@ fn main() {
             Ok(line) => line,
             Err(_) => break,
         };
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
 
         let reply = if line.len() > MAX_REQUEST_LINE {
             RendererReply::Render(Err("engine request exceeded 24 MiB safety limit".into()))
@@ -38,7 +40,9 @@ fn main() {
                     let session_id = request.session_id.clone();
                     let (session, result) = create_session(request);
                     if sessions.len() >= MAX_SESSIONS && !sessions.contains_key(&session_id) {
-                        if let Some(key) = sessions.keys().next().cloned() { sessions.remove(&key); }
+                        if let Some(key) = sessions.keys().next().cloned() {
+                            sessions.remove(&key);
+                        }
                     }
                     sessions.insert(session_id, session);
                     RendererReply::Render(result)
@@ -65,7 +69,10 @@ fn main() {
                         });
                     RendererReply::Runtime(result)
                 }
-                Ok(RendererCommand::Tick { session_id, elapsed_ms }) => {
+                Ok(RendererCommand::Tick {
+                    session_id,
+                    elapsed_ms,
+                }) => {
                     let result = sessions
                         .get_mut(&session_id)
                         .ok_or_else(|| "live page session not found".to_owned())
@@ -85,8 +92,12 @@ fn main() {
             }
         };
 
-        if serde_json::to_writer(&mut stdout, &reply).is_err() { break; }
-        if stdout.write_all(b"\n").is_err() || stdout.flush().is_err() { break; }
+        if serde_json::to_writer(&mut stdout, &reply).is_err() {
+            break;
+        }
+        if stdout.write_all(b"\n").is_err() || stdout.flush().is_err() {
+            break;
+        }
     }
 }
 
@@ -111,7 +122,11 @@ fn create_session(request: RenderRequest) -> (LiveSession, Result<DocumentView, 
         (None, report)
     };
 
-    let session = LiveSession { request, runtime, report };
+    let session = LiveSession {
+        request,
+        runtime,
+        report,
+    };
     let view = render_session(&session);
     (session, Ok(view))
 }

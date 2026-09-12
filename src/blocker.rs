@@ -124,7 +124,11 @@ impl Blocker {
     }
 
     pub fn check(&self, context: &BlockContext<'_>) -> BlockDecision {
-        for rule in self.network_rules.iter().filter(|rule| rule.action == RuleAction::Allow) {
+        for rule in self
+            .network_rules
+            .iter()
+            .filter(|rule| rule.action == RuleAction::Allow)
+        {
             if rule_matches(rule, context) {
                 return BlockDecision {
                     blocked: false,
@@ -133,7 +137,11 @@ impl Blocker {
             }
         }
 
-        for rule in self.network_rules.iter().filter(|rule| rule.action == RuleAction::Block) {
+        for rule in self
+            .network_rules
+            .iter()
+            .filter(|rule| rule.action == RuleAction::Block)
+        {
             if rule_matches(rule, context) {
                 return BlockDecision {
                     blocked: true,
@@ -179,9 +187,7 @@ impl Blocker {
             if raw.is_empty()
                 || raw.starts_with('!')
                 || raw.starts_with('[')
-                || (raw.starts_with('#')
-                    && !raw.starts_with("##")
-                    && !raw.starts_with("#@#"))
+                || (raw.starts_with('#') && !raw.starts_with("##") && !raw.starts_with("#@#"))
             {
                 continue;
             }
@@ -213,7 +219,12 @@ impl Blocker {
         }
     }
 
-    fn add_cosmetic_rule(&mut self, domains_raw: &str, selector_raw: &str, exception: bool) -> bool {
+    fn add_cosmetic_rule(
+        &mut self,
+        domains_raw: &str,
+        selector_raw: &str,
+        exception: bool,
+    ) -> bool {
         let (domains, excluded_domains) = parse_domain_scope(domains_raw);
         let mut added = false;
 
@@ -297,14 +308,12 @@ fn parse_network_rule(raw: &str) -> Option<NetworkRule> {
                 }
             }
             // "important" affects rule priority, not whether the request matches.
-            "important" => {},
+            "important" => {}
             // Options that change request rewriting, casing, content policy, or target
             // resource classes we do not implement are safer to ignore as a whole rule.
             "redirect" | "rewrite" | "csp" | "removeparam" | "badfilter" | "match-case"
-            | "popup" | "object" | "object-subrequest"
-            | "xmlhttprequest" | "subdocument" | "ping" | "websocket" | "webrtc" => {
-                return None
-            }
+            | "popup" | "object" | "object-subrequest" | "xmlhttprequest" | "subdocument"
+            | "ping" | "websocket" | "webrtc" => return None,
             _ => return None,
         }
     }
@@ -347,10 +356,16 @@ fn rule_matches(rule: &NetworkRule, context: &BlockContext<'_>) -> bool {
 }
 
 fn domain_scope_matches(included: &[String], excluded: &[String], host: &str) -> bool {
-    if excluded.iter().any(|domain| host_matches_domain(host, domain)) {
+    if excluded
+        .iter()
+        .any(|domain| host_matches_domain(host, domain))
+    {
         return false;
     }
-    included.is_empty() || included.iter().any(|domain| host_matches_domain(host, domain))
+    included.is_empty()
+        || included
+            .iter()
+            .any(|domain| host_matches_domain(host, domain))
 }
 
 fn host_matches_domain(host: &str, domain: &str) -> bool {
@@ -391,7 +406,12 @@ fn pattern_matches(pattern: &str, url: &Url) -> bool {
     simplified_glob_matches(body, &url_text, anchored_start, anchored_end)
 }
 
-fn simplified_glob_matches(pattern: &str, text: &str, anchor_start: bool, anchor_end: bool) -> bool {
+fn simplified_glob_matches(
+    pattern: &str,
+    text: &str,
+    anchor_start: bool,
+    anchor_end: bool,
+) -> bool {
     let p = pattern.as_bytes();
     let t = text.as_bytes();
 
@@ -554,11 +574,7 @@ fn parse_attr_selector(raw: &str) -> Option<AttrSelector> {
             if name.is_empty() {
                 return None;
             }
-            let value = value
-                .trim()
-                .trim_matches('"')
-                .trim_matches('\'')
-                .to_owned();
+            let value = value.trim().trim_matches('"').trim_matches('\'').to_owned();
             return Some(AttrSelector {
                 name,
                 op,

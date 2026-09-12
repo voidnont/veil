@@ -48,21 +48,31 @@ impl MediaLoader {
         thread::spawn(move || {
             let mut network = PrivacyNetwork::new_with_storage(request.storage.clone());
             if !request.custom_filters.trim().is_empty() {
-                network.blocker_mut().replace_custom_filters(request.custom_filters.clone());
+                network
+                    .blocker_mut()
+                    .replace_custom_filters(request.custom_filters.clone());
             }
-            let result = network.get_media(&request.top_level, &request.url, request.privacy).map(|response| {
-                let (format, duration_seconds) = probe_format(&response.bytes, &response.content_type);
-                MediaProbe {
-                    final_url: response.final_url.to_string(),
-                    content_type: response.content_type,
-                    format,
-                    byte_len: response.bytes.len(),
-                    duration_seconds,
-                }
-            });
+            let result = network
+                .get_media(&request.top_level, &request.url, request.privacy)
+                .map(|response| {
+                    let (format, duration_seconds) =
+                        probe_format(&response.bytes, &response.content_type);
+                    MediaProbe {
+                        final_url: response.final_url.to_string(),
+                        content_type: response.content_type,
+                        format,
+                        byte_len: response.bytes.len(),
+                        duration_seconds,
+                    }
+                });
             let blocked_count = network.blocked_count();
             let blocked_events = network.take_blocked_events();
-            let _ = sender.send(MediaLoadResult { key: request.key, result, blocked_count, blocked_events });
+            let _ = sender.send(MediaLoadResult {
+                key: request.key,
+                result,
+                blocked_count,
+                blocked_events,
+            });
         });
     }
 
@@ -81,11 +91,21 @@ fn probe_format(bytes: &[u8], content_type: &str) -> (String, Option<f64>) {
     if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" {
         return ("ISO-BMFF / MP4".into(), None);
     }
-    if bytes.starts_with(b"OggS") { return ("Ogg".into(), None); }
-    if bytes.starts_with(b"ID3") || bytes.first().copied() == Some(0xff) { return ("MP3/AAC-family".into(), None); }
-    if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) { return ("WebM/Matroska".into(), None); }
-    if bytes.starts_with(b"fLaC") { return ("FLAC".into(), None); }
-    if !content_type.is_empty() { return (content_type.to_owned(), None); }
+    if bytes.starts_with(b"OggS") {
+        return ("Ogg".into(), None);
+    }
+    if bytes.starts_with(b"ID3") || bytes.first().copied() == Some(0xff) {
+        return ("MP3/AAC-family".into(), None);
+    }
+    if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
+        return ("WebM/Matroska".into(), None);
+    }
+    if bytes.starts_with(b"fLaC") {
+        return ("FLAC".into(), None);
+    }
+    if !content_type.is_empty() {
+        return (content_type.to_owned(), None);
+    }
     ("unknown media".into(), None)
 }
 
@@ -97,9 +117,12 @@ fn wav_duration(bytes: &[u8]) -> Option<f64> {
         let id = &bytes[pos..pos + 4];
         let size = u32::from_le_bytes(bytes[pos + 4..pos + 8].try_into().ok()?) as usize;
         let start = pos + 8;
-        if start + size > bytes.len() { break; }
+        if start + size > bytes.len() {
+            break;
+        }
         if id == b"fmt " && size >= 12 {
-            byte_rate = Some(u32::from_le_bytes(bytes[start + 8..start + 12].try_into().ok()?) as f64);
+            byte_rate =
+                Some(u32::from_le_bytes(bytes[start + 8..start + 12].try_into().ok()?) as f64);
         } else if id == b"data" {
             data_size = Some(size as f64);
         }
