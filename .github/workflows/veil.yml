@@ -38,12 +38,59 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         if: steps.detect.outputs.pending == 'true'
 
-      - name: Apply shell update
+      - name: Integrate shell source
         if: steps.detect.outputs.pending == 'true'
         shell: bash
         run: |
-          git apply --check tools/veil-shell-main.patch
-          git apply tools/veil-shell-main.patch
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/main.rs")
+          source = path.read_text()
+
+          replacements = [
+              (
+                  'use veil_engine::style::{ComputedStyle, FontKind, JustifyContent, LayoutMode, TextAlign};\n\nconst HOME:',
+                  'use veil_engine::style::{ComputedStyle, FontKind, JustifyContent, LayoutMode, TextAlign};\n\nmod shell_ui;\n\nconst HOME:',
+              ),
+              (
+                  'const COLLAPSED_DOCK_WIDTH: f32 = 56.0;\nconst EXPANDED_DOCK_WIDTH: f32 = 248.0;',
+                  'const COLLAPSED_DOCK_WIDTH: f32 = 54.0;\nconst EXPANDED_DOCK_WIDTH: f32 = 260.0;',
+              ),
+              (
+                  'visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(210, 118, 108, 78);',
+                  'visuals.selection.bg_fill = Color32::from_rgba_unmultiplied(132, 102, 222, 72);',
+              ),
+              (
+                  '''        egui::Frame::default()
+                      .fill(Color32::from_rgba_unmultiplied(22, 23, 27, self.glass_alpha(extra_opacity)))
+                      .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 34)))
+                      .corner_radius(16)
+                      .inner_margin(8)''',
+                  '''        egui::Frame::default()
+                      .fill(Color32::from_rgba_unmultiplied(20, 20, 26, self.glass_alpha(extra_opacity)))
+                      .stroke(egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 24)))
+                      .corner_radius(14)
+                      .inner_margin(6)''',
+              ),
+              (
+                  '''        self.render_content(ctx);
+                  self.render_sidebar(ctx);
+                  self.render_address_pill(ctx);''',
+                  '''        shell_ui::render_content(self, ctx);
+                  shell_ui::render_sidebar(self, ctx);
+                  shell_ui::render_address_pill(self, ctx);''',
+              ),
+          ]
+
+          for old, new in replacements:
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one shell integration match, found {count}: {old[:80]!r}")
+              source = source.replace(old, new, 1)
+
+          path.write_text(source)
+          PY
 
       - name: Test updated source
         if: steps.detect.outputs.pending == 'true'
