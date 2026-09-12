@@ -24,8 +24,41 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
 
+      - name: Narrow runtime matcher
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tools/veil_082_patch.py')
+          text = path.read_text()
+          old = 'if count != 2:\n    raise SystemExit(f"runtime javascript guards: expected two matches, found {count}")'
+          new = 'if count != 1:\n    raise SystemExit(f"runtime javascript guards: expected one pump-timer match, found {count}")'
+          if old not in text:
+              raise SystemExit('runtime matcher guard not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
       - name: Apply Veil 0.8.2 patch
         run: python3 tools/veil_082_patch.py
+
+      - name: Guard direct runtime events on YouTube
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/main.rs')
+          text = path.read_text()
+          old = '''        let javascript_enabled = Url::parse(&tab.page.url)
+            .ok()
+            .map(|url| self.profiles.for_url(&url).javascript)
+            .unwrap_or(false);'''
+          new = '''        let javascript_enabled = !is_guarded_script_site(&tab.page.url)
+            && Url::parse(&tab.page.url)
+                .ok()
+                .map(|url| self.profiles.for_url(&url).javascript)
+                .unwrap_or(false);'''
+          if text.count(old) != 1:
+              raise SystemExit(f'direct runtime event guard expected one match, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
 
       - name: Format
         run: cargo fmt --all
