@@ -134,7 +134,7 @@ jobs:
           rm -f tools/veil-shell-main.patch
           rm -rf tools/update-parts tools/source-update
           git add src/main.rs src/shell_ui.rs
-          git add -A -- tools/veil-shell-main.patch tools/update-parts tools/source-update
+          git add -u -- tools
           git config user.name "veil-ci"
           git config user.email "actions@users.noreply.github.com"
           git commit -m "Veil Browser shell UI refresh"
@@ -166,6 +166,67 @@ jobs:
 
       - name: Release build
         run: cargo build --release --bins
+
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          choco install innosetup --no-progress -y
+          New-Item -ItemType Directory -Force dist | Out-Null
+          @'
+          [Setup]
+          AppId={{D9E74630-E1B8-4BE6-9D86-39BDA2817AC3}
+          AppName=Veil Browser
+          AppVersion=0.8.0
+          AppPublisher=Veil
+          DefaultDirName={localappdata}\Programs\Veil Browser
+          DefaultGroupName=Veil Browser
+          DisableProgramGroupPage=yes
+          PrivilegesRequired=lowest
+          OutputDir=dist
+          OutputBaseFilename=Veil-Browser-Setup
+          Compression=lzma2
+          SolidCompression=yes
+          WizardStyle=modern
+          UninstallDisplayIcon={app}\veil-browser.exe
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          CloseApplications=yes
+          RestartApplications=no
+          SetupLogging=yes
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+
+          [Files]
+          Source: "target\release\veil-browser.exe"; DestDir: "{app}"; Flags: ignoreversion
+          Source: "target\release\veil-engine.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+          [Icons]
+          Name: "{autoprograms}\Veil Browser"; Filename: "{app}\veil-browser.exe"; WorkingDir: "{app}"
+          Name: "{autoprograms}\Veil Browser (Safe UI)"; Filename: "{app}\veil-browser.exe"; Parameters: "--safe-ui"; WorkingDir: "{app}"
+          Name: "{userdesktop}\Veil Browser"; Filename: "{app}\veil-browser.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+
+          [Run]
+          Filename: "{app}\veil-browser.exe"; Description: "Launch Veil Browser"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
+          '@ | Set-Content -Path veil-installer.iss -Encoding UTF8
+
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $compiler)) {
+            $command = Get-Command iscc.exe -ErrorAction SilentlyContinue
+            if ($command) { $compiler = $command.Source }
+          }
+          if (-not (Test-Path $compiler)) { throw 'Inno Setup compiler was not found.' }
+          & $compiler veil-installer.iss
+          if (-not (Test-Path 'dist\Veil-Browser-Setup.exe')) { throw 'Installer was not produced.' }
+
+      - name: Upload Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: veil-windows-installer
+          path: dist/Veil-Browser-Setup.exe
+          if-no-files-found: error
 
       - name: Upload binaries
         uses: actions/upload-artifact@v4
