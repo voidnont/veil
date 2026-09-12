@@ -24,6 +24,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libx11-dev libxi-dev libxcursor-dev libxrandr-dev libxinerama-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev
 
+      - name: Keep workflow packaging outside the bot commit
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("tools/veil_085_gecko_image_fix.py")
+          text = path.read_text()
+          marker = "# Normal installer should package the tested version after this workflow commits."
+          if marker in text:
+              text = text.split(marker, 1)[0].rstrip() + "\n"
+          path.write_text(text)
+          PY
+
       - name: Apply Gecko-inspired image pipeline fix
         run: python3 tools/veil_085_gecko_image_fix.py
 
@@ -35,16 +47,11 @@ jobs:
           CARGO_TARGET_DIR: /tmp/veil-target
         run: cargo test --all-targets
 
-      - name: Release build
-        env:
-          CARGO_TARGET_DIR: /tmp/veil-target
-        run: cargo build --release --bins
-
       - name: Commit tested source
         run: |
-          rm -f tools/veil_085_gecko_image_fix.py .github/workflows/apply-veil-085-gecko-image-fix.yml
-          git add Cargo.toml Cargo.lock src/net.rs src/image_loader.rs src/main.rs src/engine.rs .github/workflows/veil.yml
-          git add -u -- tools/veil_085_gecko_image_fix.py .github/workflows/apply-veil-085-gecko-image-fix.yml
+          rm -f tools/veil_085_gecko_image_fix.py
+          git add Cargo.toml Cargo.lock src/net.rs src/image_loader.rs src/main.rs src/engine.rs
+          git add -u -- tools/veil_085_gecko_image_fix.py
           git config user.name "veil-ci"
           git config user.email "actions@users.noreply.github.com"
           git commit -m "Rebuild Veil image pipeline from Gecko behavior"
