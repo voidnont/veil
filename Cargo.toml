@@ -1,6 +1,6 @@
 [package]
 name = "veil-browser"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2021"
 description = "Veil Browser: a privacy-first experimental desktop browser with the independent Veil Engine"
 license = "MIT"
