@@ -1,0 +1,52 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Veil Browser"
+    Manufacturer="Veil"
+    Version="0.8.9"
+    Language="1033"
+    UpgradeCode="A5A2C11B-BC89-4E5D-AE7D-913CF8B45189"
+    Scope="perUser">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Veil Browser is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDirectory" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Veil Browser">
+          <Component Id="BrowserExecutable" Guid="*">
+            <File Id="VeilBrowserExe" Source="target\release\veil-browser.exe" KeyPath="yes">
+              <Shortcut
+                Id="StartMenuShortcut"
+                Directory="ProgramMenuFolder"
+                Name="Veil Browser"
+                WorkingDirectory="INSTALLFOLDER" />
+              <Shortcut
+                Id="SafeUiStartMenuShortcut"
+                Directory="ProgramMenuFolder"
+                Name="Veil Browser (Safe UI)"
+                Arguments="--safe-ui"
+                WorkingDirectory="INSTALLFOLDER" />
+              <Shortcut
+                Id="DesktopShortcut"
+                Directory="DesktopFolder"
+                Name="Veil Browser"
+                WorkingDirectory="INSTALLFOLDER" />
+            </File>
+          </Component>
+
+          <Component Id="EngineExecutable" Guid="*">
+            <File Id="VeilEngineExe" Source="target\release\veil-engine.exe" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder" />
+    <StandardDirectory Id="DesktopFolder" />
+
+    <Feature Id="MainFeature" Title="Veil Browser" Level="1">
+      <ComponentRef Id="BrowserExecutable" />
+      <ComponentRef Id="EngineExecutable" />
+    </Feature>
+  </Package>
+</Wix>
