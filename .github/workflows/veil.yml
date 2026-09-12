@@ -90,6 +90,29 @@ jobs:
               source = source.replace(old, new, 1)
 
           path.write_text(source)
+
+          shell_path = Path("src/shell_ui.rs")
+          shell = shell_path.read_text()
+          shell_replacements = [
+              ('const PANEL_BG: Color32 = Color32::from_rgba_unmultiplied(22, 22, 28, 246);\n', ''),
+              ('const HOVER_BG: Color32 = Color32::from_rgba_unmultiplied(255, 255, 255, 14);\n', ''),
+              ('const ACTIVE_BG: Color32 = Color32::from_rgba_unmultiplied(255, 255, 255, 22);\n', ''),
+              ('const ACCENT_BG: Color32 = Color32::from_rgba_unmultiplied(132, 102, 222, 34);\n', ''),
+              ('const BORDER: Color32 = Color32::from_rgba_unmultiplied(255, 255, 255, 24);\n', ''),
+              ('.fill(PANEL_BG)', '.fill(Color32::from_rgba_unmultiplied(22, 22, 28, 246))'),
+              ('.stroke(egui::Stroke::new(1.0, BORDER))', '.stroke(egui::Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 24)))'),
+              ('if active { ACCENT_BG } else { Color32::TRANSPARENT }', 'if active { Color32::from_rgba_unmultiplied(132, 102, 222, 34) } else { Color32::TRANSPARENT }'),
+              ('if active { ACTIVE_BG } else { Color32::TRANSPARENT }', 'if active { Color32::from_rgba_unmultiplied(255, 255, 255, 22) } else { Color32::TRANSPARENT }'),
+              ('                        BORDER\n', '                        Color32::from_rgba_unmultiplied(255, 255, 255, 24)\n'),
+          ]
+          for old, new in shell_replacements:
+              count = shell.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one shell compatibility match, found {count}: {old[:80]!r}")
+              shell = shell.replace(old, new, 1)
+
+          shell = shell.replace('egui::Stroke::new(1.0,', 'egui::Stroke::new(1.0_f32,')
+          shell_path.write_text(shell)
           PY
 
       - name: Test updated source
