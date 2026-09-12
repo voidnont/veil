@@ -1,5 +1,5 @@
-use std::io::Cursor;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
@@ -37,57 +37,49 @@ pub struct ImageLoadResult {
 }
 
 pub struct ImageLoader {
-    sender: Sender<ImageLoadResult>,
+    request_sender: Sender<ImageLoadRequest>,
     receiver: Receiver<ImageLoadResult>,
 }
 
 impl ImageLoader {
     pub fn new() -> Self {
-        let (sender, receiver) = mpsc::channel();
-        Self { sender, receiver }
+        let (request_sender, request_receiver) = mpsc::channel::<ImageLoadRequest>();
+        let (result_sender, receiver) = mpsc::channel::<ImageLoadResult>();
+        let shared_receiver = Arc::new(Mutex::new(request_receiver));
+
+        // Gecko uses bounded task pools instead of creating a new native thread
+        // for every decode. Keep enough workers for parallelism while reserving
+        // CPU for the UI/render threads.
+        for worker in 0..image_worker_count() {
+            let requests = shared_receiver.clone();
+            let sender = result_sender.clone();
+            let _ = thread::Builder::new()
+                .name(format!("veil-image-{worker}"))
+                .spawn(move || loop {
+                    let request = {
+                        let Ok(receiver) = requests.lock() else {
+                            break;
+                        };
+                        match receiver.recv() {
+                            Ok(request) => request,
+                            Err(_) => break,
+                        }
+                    };
+                    let result = process_image_request(request);
+                    if sender.send(result).is_err() {
+                        break;
+                    }
+                });
+        }
+
+        Self {
+            request_sender,
+            receiver,
+        }
     }
 
     pub fn start(&self, request: ImageLoadRequest) {
-        let sender = self.sender.clone();
-        thread::spawn(move || {
-            let mut network = PrivacyNetwork::new_with_storage(request.storage.clone());
-            if !request.custom_filters.trim().is_empty() {
-                network
-                    .blocker_mut()
-                    .replace_custom_filters(request.custom_filters.clone());
-            }
-
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if request.url.scheme() == "data" {
-                    let (content_type, bytes) = decode_data_image(request.url.as_str())?;
-                    let decoded = decode_image_payload(&bytes, &content_type)?;
-                    return Ok(DecodedImage {
-                        final_url: request.url.to_string(),
-                        size: decoded.size,
-                        rgba: decoded.rgba,
-                    });
-                }
-
-                let response =
-                    network.get_image(&request.top_level, &request.url, request.privacy)?;
-                let decoded = decode_image_payload(&response.bytes, &response.content_type)?;
-                Ok(DecodedImage {
-                    final_url: response.final_url.to_string(),
-                    size: decoded.size,
-                    rgba: decoded.rgba,
-                })
-            }))
-            .unwrap_or_else(|_| Err("Veil recovered from an image worker panic.".into()));
-
-            let blocked_count = network.blocked_count();
-            let blocked_events = network.take_blocked_events();
-            let _ = sender.send(ImageLoadResult {
-                key: request.key,
-                result,
-                blocked_count,
-                blocked_events,
-            });
-        });
+        let _ = self.request_sender.send(request);
     }
 
     pub fn try_recv(&self) -> Option<ImageLoadResult> {
@@ -95,6 +87,52 @@ impl ImageLoader {
             Ok(value) => Some(value),
             Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => None,
         }
+    }
+}
+
+fn image_worker_count() -> usize {
+    let cores = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(4);
+    (cores / 2).clamp(2, 6)
+}
+
+fn process_image_request(request: ImageLoadRequest) -> ImageLoadResult {
+    let mut network = PrivacyNetwork::new_with_storage(request.storage.clone());
+    if !request.custom_filters.trim().is_empty() {
+        network
+            .blocker_mut()
+            .replace_custom_filters(request.custom_filters.clone());
+    }
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if request.url.scheme() == "data" {
+            let (content_type, bytes) = decode_data_image(request.url.as_str())?;
+            let decoded = decode_image_payload(&bytes, &content_type)?;
+            return Ok(DecodedImage {
+                final_url: request.url.to_string(),
+                size: decoded.size,
+                rgba: decoded.rgba,
+            });
+        }
+
+        let response = network.get_image(&request.top_level, &request.url, request.privacy)?;
+        let decoded = decode_image_payload(&response.bytes, &response.content_type)?;
+        Ok(DecodedImage {
+            final_url: response.final_url.to_string(),
+            size: decoded.size,
+            rgba: decoded.rgba,
+        })
+    }))
+    .unwrap_or_else(|_| Err("Veil recovered from an image worker panic.".into()));
+
+    let blocked_count = network.blocked_count();
+    let blocked_events = network.take_blocked_events();
+    ImageLoadResult {
+        key: request.key,
+        result,
+        blocked_count,
+        blocked_events,
     }
 }
 
@@ -253,6 +291,12 @@ fn decode_data_image(url: &str) -> Result<(String, Vec<u8>), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn worker_pool_is_bounded() {
+        assert!((2..=6).contains(&image_worker_count()));
+    }
 
     #[test]
     fn sniffs_png_even_when_http_mime_is_wrong() {

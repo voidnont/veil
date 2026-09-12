@@ -1,11 +1,11 @@
 use std::io::Read;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{
-    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CACHE_CONTROL, CONTENT_TYPE, COOKIE, DNT,
-    LOCATION, SET_COOKIE, USER_AGENT,
+    HeaderMap, HeaderValue, ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, COOKIE, DNT, LOCATION,
+    SET_COOKIE, USER_AGENT,
 };
 use reqwest::StatusCode;
 use url::Url;
@@ -24,6 +24,40 @@ const MAX_MEDIA_BYTES: usize = 64 * 1024 * 1024;
 const MAX_UPLOAD_BYTES: usize = 32 * 1024 * 1024;
 const IMAGE_ACCEPT: &str =
     "image/webp,image/png,image/jpeg,image/gif,image/svg+xml,image/bmp,image/x-icon,*/*;q=0.1";
+
+static SHARED_HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
+
+fn build_shared_http_client() -> Client {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        USER_AGENT,
+        HeaderValue::from_static("Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.6 VeilEngine/0.8.6"),
+    );
+    headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.7"));
+    headers.insert(DNT, HeaderValue::from_static("1"));
+    headers.insert("sec-gpc", HeaderValue::from_static("1"));
+
+    // Like Gecko's Necko layer, all browser resource brokers share the same
+    // underlying HTTP client so TLS sessions and keep-alive connections can be
+    // reused across documents, images, stylesheets, fonts and scripts.
+    Client::builder()
+        .default_headers(headers)
+        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
+        .pool_idle_timeout(Some(Duration::from_secs(90)))
+        .pool_max_idle_per_host(8)
+        .tcp_keepalive(Some(Duration::from_secs(60)))
+        .tcp_nodelay(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("failed to construct shared HTTPS client")
+}
+
+fn shared_http_client() -> Client {
+    SHARED_HTTP_CLIENT
+        .get_or_init(build_shared_http_client)
+        .clone()
+}
 
 pub struct PageResponse {
     pub final_url: Url,
@@ -76,25 +110,7 @@ impl PrivacyNetwork {
     }
 
     pub fn new_with_storage(storage: SharedBrowserStorage) -> Self {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            USER_AGENT,
-            HeaderValue::from_static(
-                "Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.5 VeilEngine/0.8.5",
-            ),
-        );
-        headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.7"));
-        headers.insert(DNT, HeaderValue::from_static("1"));
-        headers.insert("sec-gpc", HeaderValue::from_static("1"));
-        headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-
-        let client = Client::builder()
-            .default_headers(headers)
-            .timeout(Duration::from_secs(30))
-            .connect_timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("failed to construct HTTPS client");
+        let client = shared_http_client();
 
         Self {
             client,

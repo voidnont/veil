@@ -1,5 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
@@ -51,16 +52,25 @@ pub struct LoadResult {
 pub struct PageLoader {
     sender: Sender<LoadResult>,
     receiver: Receiver<LoadResult>,
+    latest_generation: Arc<Mutex<HashMap<u64, u64>>>,
 }
 
 impl PageLoader {
     pub fn new() -> Self {
         let (sender, receiver) = mpsc::channel();
-        Self { sender, receiver }
+        Self {
+            sender,
+            receiver,
+            latest_generation: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     pub fn start(&self, request: LoadRequest) {
+        if let Ok(mut latest) = self.latest_generation.lock() {
+            latest.insert(request.tab_id, request.generation);
+        }
         let sender = self.sender.clone();
+        let latest_generation = self.latest_generation.clone();
         thread::spawn(move || {
             let started = Instant::now();
             let mut network = PrivacyNetwork::new_with_storage(request.storage.clone());
@@ -71,7 +81,7 @@ impl PageLoader {
             }
 
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                load_document(&mut network, &request)
+                load_document(&mut network, &request, &latest_generation)
             }))
             .unwrap_or_else(|_| Err("Veil recovered from an internal page-load panic.".into()));
             let blocked_count = network.blocked_count();
@@ -104,6 +114,7 @@ impl PageLoader {
 fn load_document(
     network: &mut PrivacyNetwork,
     request: &LoadRequest,
+    latest_generation: &Arc<Mutex<HashMap<u64, u64>>>,
 ) -> Result<(DocumentView, RendererMode), String> {
     let url = Url::parse(&request.url).map_err(|e| format!("Invalid URL: {e}"))?;
     let response = match &request.method {
@@ -115,6 +126,7 @@ fn load_document(
             network.post_multipart_document(&url, request.privacy, parts.clone())?
         }
     };
+    ensure_navigation_current(latest_generation, request)?;
     let final_url = response.final_url.clone();
     let guarded_site = is_guarded_heavy_site(&final_url);
     let mut render_privacy = request.privacy;
@@ -143,6 +155,7 @@ fn load_document(
         MAX_TOTAL_STYLESHEET_BYTES
     };
     for stylesheet in stylesheet_urls.into_iter().take(stylesheet_limit) {
+        ensure_navigation_current(latest_generation, request)?;
         if let Ok(resource) = network.get_stylesheet(&final_url, &stylesheet, render_privacy) {
             if external_css_bytes.saturating_add(resource.body.len()) > stylesheet_byte_limit {
                 break;
@@ -150,6 +163,7 @@ fn load_document(
             external_css_bytes = external_css_bytes.saturating_add(resource.body.len());
             if !guarded_site && web_fonts.len() < MAX_WEB_FONTS_PER_PAGE {
                 for source in discovery.discover_web_fonts(&resource.body, &resource.final_url) {
+                    ensure_navigation_current(latest_generation, request)?;
                     if web_fonts.len() >= MAX_WEB_FONTS_PER_PAGE {
                         break;
                     }
@@ -189,6 +203,7 @@ fn load_document(
     let mut external_script_bytes = 0usize;
     if render_privacy.javascript {
         for script in script_urls.into_iter().take(script_limit) {
+            ensure_navigation_current(latest_generation, request)?;
             if let Ok(resource) = network.get_script(&final_url, &script, request.privacy) {
                 if external_script_bytes.saturating_add(resource.body.len()) > script_byte_limit {
                     break;
@@ -213,6 +228,7 @@ fn load_document(
         storage: storage_snapshot,
     };
 
+    ensure_navigation_current(latest_generation, request)?;
     let (mut view, mode) = RendererHost::default().render(render_request)?;
     request
         .storage
@@ -224,6 +240,22 @@ fn load_document(
     }
     view.web_fonts = web_fonts;
     Ok((view, mode))
+}
+
+fn ensure_navigation_current(
+    latest_generation: &Arc<Mutex<HashMap<u64, u64>>>,
+    request: &LoadRequest,
+) -> Result<(), String> {
+    let current = latest_generation
+        .lock()
+        .ok()
+        .and_then(|latest| latest.get(&request.tab_id).copied())
+        .unwrap_or(request.generation);
+    if current == request.generation {
+        Ok(())
+    } else {
+        Err("Navigation superseded by a newer request.".into())
+    }
 }
 
 fn is_guarded_heavy_site(url: &Url) -> bool {

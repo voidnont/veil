@@ -49,6 +49,8 @@ pub struct ScriptReport {
     pub load_dispatched: bool,
     pub live_node_count: usize,
     pub event_listener_count: usize,
+    pub pending_timer_count: usize,
+    pub pending_animation_frame_count: usize,
 }
 
 /// ECMAScript boundary for the Veil engine.
@@ -218,10 +220,12 @@ impl LiveJavascriptRuntime {
         (default_prevented, self.snapshot(storage))
     }
 
-    pub fn tick(&mut self, _elapsed_ms: u64, storage: &ScriptStorageSnapshot) -> ScriptReport {
-        if let Err(err) = self.context.eval(Source::from_bytes("__vvRunTimers();")) {
+    pub fn tick(&mut self, elapsed_ms: u64, storage: &ScriptStorageSnapshot) -> ScriptReport {
+        let elapsed_ms = elapsed_ms.min(1_000);
+        let source = format!("__vvAdvanceClock({elapsed_ms});__vvRunAnimationFrames();");
+        if let Err(err) = self.context.eval(Source::from_bytes(source.as_str())) {
             self.errors += 1;
-            self.last_error = Some(format!("Timer event error: {err}"));
+            self.last_error = Some(format!("Refresh tick error: {err}"));
         }
         let _ = self.context.run_jobs();
         self.snapshot(storage)
@@ -265,6 +269,10 @@ impl LiveJavascriptRuntime {
             eval_usize(&mut self.context, "__vvAllNodes.length").unwrap_or_default();
         report.event_listener_count =
             eval_usize(&mut self.context, "__vvListenerCount").unwrap_or_default();
+        report.pending_timer_count =
+            eval_usize(&mut self.context, "__vvTimers.length").unwrap_or_default();
+        report.pending_animation_frame_count =
+            eval_usize(&mut self.context, "__vvAnimationFrames.length").unwrap_or_default();
         report
     }
 }
@@ -359,6 +367,9 @@ globalThis.__vvMutations = [];
 globalThis.__vvCanvasCommands = [];
 globalThis.__vvCookieWrites = [];
 globalThis.__vvTimers = [];
+globalThis.__vvAnimationFrames = [];
+globalThis.__vvClock = 0;
+globalThis.__vvNextTimerId = 1;
 globalThis.__vvDOMContentLoaded = false;
 globalThis.__vvLoaded = false;
 globalThis.__vvListenerCount = 0;
@@ -511,12 +522,44 @@ document.writeln=(...args)=>document.write(...args,'\n');
 let __vvCookie=String(__vvInitialCookie||'');
 Object.defineProperty(document,'cookie',{get(){return __vvCookie;},set(v){v=String(v);__vvCookieWrites.push(v);const first=v.split(';')[0];const eq=first.indexOf('=');if(eq>0){const name=first.slice(0,eq).trim();const value=first.slice(eq+1).trim();const parts=__vvCookie.split(';').map(x=>x.trim()).filter(Boolean).filter(x=>!x.startsWith(name+'='));parts.push(name+'='+value);__vvCookie=parts.join('; ');}}});
 
-globalThis.navigator=Object.freeze({userAgent:'Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.0 VeilEngine/0.8.0',language:'en-US',languages:Object.freeze(['en-US','en']),doNotTrack:'1',globalPrivacyControl:true,hardwareConcurrency:4});
+globalThis.navigator=Object.freeze({userAgent:'Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.6 VeilEngine/0.8.6',language:'en-US',languages:Object.freeze(['en-US','en']),doNotTrack:'1',globalPrivacyControl:true,hardwareConcurrency:4});
 function __vvStorage(initial){const data=Object.assign(Object.create(null),initial||{});return Object.freeze({getItem(k){k=String(k);return Object.prototype.hasOwnProperty.call(data,k)?data[k]:null;},setItem(k,v){data[String(k)]=String(v);},removeItem(k){delete data[String(k)];},clear(){for(const k of Object.keys(data))delete data[k];},key(i){return Object.keys(data)[Number(i)]??null;},get length(){return Object.keys(data).length;},__dump(){return Object.assign({},data);}});}
 globalThis.localStorage=__vvStorage(__vvInitialLocal);globalThis.sessionStorage=__vvStorage(__vvInitialSession);
-globalThis.setTimeout=(fn,_ms=0,...args)=>{if(typeof fn==='function'&&__vvTimers.length<192){__vvTimers.push(()=>fn(...args));return __vvTimers.length;}return 0;};
-globalThis.clearTimeout=_id=>{};globalThis.requestAnimationFrame=fn=>setTimeout(()=>fn(0),0);globalThis.cancelAnimationFrame=clearTimeout;
-globalThis.__vvRunTimers=()=>{let guard=0;while(__vvTimers.length&&guard++<192){const fn=__vvTimers.shift();try{fn();}catch(e){__vvConsole.push('timer error: '+e);}}};
+globalThis.setTimeout=(fn,ms=0,...args)=>{
+  if(typeof fn!=='function'||__vvTimers.length>=192)return 0;
+  const id=__vvNextTimerId++, delay=Math.max(0,Number(ms)||0);
+  __vvTimers.push({id,due:__vvClock+delay,interval:0,fn:()=>fn(...args)});return id;
+};
+globalThis.setInterval=(fn,ms=0,...args)=>{
+  if(typeof fn!=='function'||__vvTimers.length>=192)return 0;
+  const id=__vvNextTimerId++, delay=Math.max(4,Number(ms)||0);
+  __vvTimers.push({id,due:__vvClock+delay,interval:delay,fn:()=>fn(...args)});return id;
+};
+globalThis.clearTimeout=id=>{
+  id=Number(id)||0;for(let i=__vvTimers.length-1;i>=0;i--)if(__vvTimers[i].id===id)__vvTimers.splice(i,1);
+};
+globalThis.clearInterval=globalThis.clearTimeout;
+globalThis.requestAnimationFrame=fn=>{
+  if(typeof fn!=='function'||__vvAnimationFrames.length>=192)return 0;
+  const id=__vvNextTimerId++;__vvAnimationFrames.push({id,fn});return id;
+};
+globalThis.cancelAnimationFrame=id=>{
+  id=Number(id)||0;for(let i=__vvAnimationFrames.length-1;i>=0;i--)if(__vvAnimationFrames[i].id===id)__vvAnimationFrames.splice(i,1);
+};
+globalThis.performance=Object.freeze({now:()=>__vvClock,timeOrigin:0});
+globalThis.__vvAdvanceClock=elapsed=>{
+  __vvClock+=Math.max(0,Number(elapsed)||0);
+  const pending=__vvTimers.splice(0,__vvTimers.length);let guard=0;
+  for(const timer of pending){
+    if(timer.due>__vvClock||guard>=192){__vvTimers.push(timer);continue;}
+    guard++;try{timer.fn();}catch(e){__vvConsole.push('timer error: '+e);}
+    if(timer.interval>0&&__vvTimers.length<192){timer.due=__vvClock+timer.interval;__vvTimers.push(timer);}
+  }
+};
+globalThis.__vvRunAnimationFrames=()=>{
+  const batch=__vvAnimationFrames.splice(0,192);
+  for(const frame of batch){try{frame.fn(__vvClock);}catch(e){__vvConsole.push('animation frame error: '+e);}}
+};
 
 globalThis.fetch=undefined;globalThis.XMLHttpRequest=undefined;globalThis.WebSocket=undefined;globalThis.EventSource=undefined;globalThis.Worker=undefined;globalThis.SharedWorker=undefined;globalThis.WebAssembly=undefined;
 "#;
@@ -551,6 +594,32 @@ mod tests {
         let report =
             JavascriptSandbox::default().run(&dom, true, &[], 0, &ScriptStorageSnapshot::default());
         assert_eq!(report.console, vec!["capture", "target", "bubble"]);
+    }
+
+    #[test]
+    fn animation_frames_wait_for_refresh_tick() {
+        let dom =
+            Dom::parse("<script>requestAnimationFrame(()=>{document.title='Frame'})</script>");
+        let (mut runtime, initial) =
+            LiveJavascriptRuntime::new(&dom, &[], 0, &ScriptStorageSnapshot::default());
+        assert_eq!(initial.pending_animation_frame_count, 1);
+        assert_ne!(initial.title_override.as_deref(), Some("Frame"));
+
+        let refreshed = runtime.tick(16, &ScriptStorageSnapshot::default());
+        assert_eq!(refreshed.title_override.as_deref(), Some("Frame"));
+        assert_eq!(refreshed.pending_animation_frame_count, 0);
+    }
+
+    #[test]
+    fn timeout_respects_elapsed_refresh_time() {
+        let dom = Dom::parse("<script>setTimeout(()=>{document.title='Later'},100)</script>");
+        let (mut runtime, initial) =
+            LiveJavascriptRuntime::new(&dom, &[], 0, &ScriptStorageSnapshot::default());
+        assert_eq!(initial.pending_timer_count, 1);
+        let early = runtime.tick(50, &ScriptStorageSnapshot::default());
+        assert_ne!(early.title_override.as_deref(), Some("Later"));
+        let due = runtime.tick(50, &ScriptStorageSnapshot::default());
+        assert_eq!(due.title_override.as_deref(), Some("Later"));
     }
 
     #[test]

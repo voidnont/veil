@@ -32,6 +32,12 @@ const COLLAPSED_DOCK_WIDTH: f32 = 54.0;
 const EXPANDED_DOCK_WIDTH: f32 = 260.0;
 const HOVER_REVEAL_DELAY: Duration = Duration::from_secs(1);
 const MAX_IMAGE_LOADS: usize = 6;
+const MAX_PAGE_RESULTS_PER_FRAME: usize = 1;
+const MAX_RUNTIME_RESULTS_PER_FRAME: usize = 1;
+const MAX_IMAGE_RESULTS_PER_FRAME: usize = 2;
+const MAX_MEDIA_RESULTS_PER_FRAME: usize = 1;
+const ACTIVE_REFRESH_INTERVAL: Duration = Duration::from_millis(16);
+const TIMER_REFRESH_INTERVAL: Duration = Duration::from_millis(50);
 
 fn main() {
     install_crash_logger();
@@ -493,7 +499,12 @@ impl VeilApp {
     }
 
     fn poll_loader(&mut self, ctx: &egui::Context) {
-        while let Some(result) = self.loader.try_recv() {
+        let mut processed = 0usize;
+        while processed < MAX_PAGE_RESULTS_PER_FRAME {
+            let Some(result) = self.loader.try_recv() else {
+                break;
+            };
+            processed += 1;
             let Some(index) = self.tabs.iter().position(|tab| tab.id == result.tab_id) else {
                 continue;
             };
@@ -532,6 +543,9 @@ impl VeilApp {
                 }
             }
         }
+        if processed == MAX_PAGE_RESULTS_PER_FRAME {
+            ctx.request_repaint();
+        }
     }
 
     fn dispatch_runtime_event(&mut self, tab_index: usize, event: DomEventRequest) {
@@ -569,7 +583,12 @@ impl VeilApp {
     }
 
     fn poll_runtime_loader(&mut self, ctx: &egui::Context) {
-        while let Some(result) = self.runtime_loader.try_recv() {
+        let mut processed = 0usize;
+        while processed < MAX_RUNTIME_RESULTS_PER_FRAME {
+            let Some(result) = self.runtime_loader.try_recv() else {
+                break;
+            };
+            processed += 1;
             self.runtime_inflight.remove(&result.tab_id);
             let Some(index) = self.tabs.iter().position(|tab| tab.id == result.tab_id) else {
                 continue;
@@ -596,36 +615,65 @@ impl VeilApp {
                 }
             }
         }
+        if processed == MAX_RUNTIME_RESULTS_PER_FRAME {
+            ctx.request_repaint();
+        }
     }
 
-    fn pump_runtime_timers(&mut self) {
-        let elapsed = self.last_runtime_tick.elapsed();
-        if elapsed < Duration::from_millis(750) {
-            return;
-        }
-        self.last_runtime_tick = Instant::now();
-        let elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
-
+    fn visible_runtime_indices(&self) -> Vec<usize> {
         let mut indices = vec![self.active_tab];
         if let Some(split) = self.split_tab_index() {
             if split != self.active_tab {
                 indices.push(split);
             }
         }
-        for index in indices {
+        indices
+    }
+
+    fn pending_refresh_interval(&self) -> Option<Duration> {
+        let mut has_timer = false;
+        for index in self.visible_runtime_indices() {
+            let Some(tab) = self.tabs.get(index) else {
+                continue;
+            };
+            if tab.page.url == HOME {
+                continue;
+            }
+            if tab.page.script_report.pending_animation_frame_count > 0 {
+                return Some(ACTIVE_REFRESH_INTERVAL);
+            }
+            has_timer |= tab.page.script_report.pending_timer_count > 0;
+        }
+        has_timer.then_some(TIMER_REFRESH_INTERVAL)
+    }
+
+    fn pump_runtime_timers(&mut self) {
+        let Some(interval) = self.pending_refresh_interval() else {
+            return;
+        };
+        let elapsed = self.last_runtime_tick.elapsed();
+        if elapsed < interval {
+            return;
+        }
+        self.last_runtime_tick = Instant::now();
+        let elapsed_ms = elapsed.as_millis().min(1_000) as u64;
+
+        for index in self.visible_runtime_indices() {
             if index >= self.tabs.len() || self.tabs[index].page.url == HOME {
                 continue;
             }
             let tab = &self.tabs[index];
+            if tab.page.script_report.pending_animation_frame_count == 0
+                && tab.page.script_report.pending_timer_count == 0
+            {
+                continue;
+            }
             let javascript_enabled = !is_guarded_script_site(&tab.page.url)
                 && Url::parse(&tab.page.url)
                     .ok()
                     .map(|url| self.profiles.for_url(&url).javascript)
                     .unwrap_or(false);
-            if !javascript_enabled {
-                continue;
-            }
-            if self.runtime_inflight.contains(&tab.id) {
+            if !javascript_enabled || self.runtime_inflight.contains(&tab.id) {
                 continue;
             }
             let request_id = self.next_runtime_request_id;
@@ -644,7 +692,12 @@ impl VeilApp {
     }
 
     fn poll_image_loader(&mut self, ctx: &egui::Context) {
-        while let Some(result) = self.image_loader.try_recv() {
+        let mut processed = 0usize;
+        while processed < MAX_IMAGE_RESULTS_PER_FRAME {
+            let Some(result) = self.image_loader.try_recv() else {
+                break;
+            };
+            processed += 1;
             self.image_loads_inflight = self.image_loads_inflight.saturating_sub(1);
             self.worker_blocked_count += result.blocked_count;
             for event in result.blocked_events {
@@ -672,10 +725,14 @@ impl VeilApp {
             };
             self.image_cache.insert(result.key, cached);
         }
+        if processed == MAX_IMAGE_RESULTS_PER_FRAME {
+            ctx.request_repaint();
+        }
     }
 
     fn pump_image_queue(&mut self) {
-        while self.image_loads_inflight < MAX_IMAGE_LOADS {
+        let concurrency = image_decode_concurrency();
+        while self.image_loads_inflight < concurrency {
             let Some(request) = self.image_load_queue.pop_front() else {
                 break;
             };
@@ -684,8 +741,13 @@ impl VeilApp {
         }
     }
 
-    fn poll_media_loader(&mut self) {
-        while let Some(result) = self.media_loader.try_recv() {
+    fn poll_media_loader(&mut self, ctx: &egui::Context) {
+        let mut processed = 0usize;
+        while processed < MAX_MEDIA_RESULTS_PER_FRAME {
+            let Some(result) = self.media_loader.try_recv() else {
+                break;
+            };
+            processed += 1;
             self.worker_blocked_count += result.blocked_count;
             for event in result.blocked_events {
                 self.blocked_log.push_front(event);
@@ -698,6 +760,9 @@ impl VeilApp {
                 Err(error) => CachedMedia::Failed(error),
             };
             self.media_cache.insert(result.key, cached);
+        }
+        if processed == MAX_MEDIA_RESULTS_PER_FRAME {
+            ctx.request_repaint();
         }
     }
 
@@ -2069,15 +2134,27 @@ impl eframe::App for VeilApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.update_hover_reveals(ctx);
+
+        // Gecko's task scheduler prioritizes user-visible/input work over
+        // background completion. Handle input first, then drain bounded worker
+        // batches so a burst of decoded images cannot monopolize one frame.
+        self.handle_shortcuts(ctx);
         self.poll_loader(ctx);
         self.poll_runtime_loader(ctx);
         self.pump_runtime_timers();
         self.poll_image_loader(ctx);
         self.pump_image_queue();
-        self.poll_media_loader();
-        self.handle_shortcuts(ctx);
-        if self.tabs.iter().any(|tab| tab.loading) {
-            ctx.request_repaint_after(Duration::from_millis(40));
+        self.poll_media_loader(ctx);
+
+        let refresh = self.pending_refresh_interval();
+        let background_active = self.tabs.iter().any(|tab| tab.loading)
+            || self.image_loads_inflight > 0
+            || !self.image_load_queue.is_empty()
+            || !self.runtime_inflight.is_empty();
+        if let Some(interval) = refresh {
+            ctx.request_repaint_after(interval);
+        } else if background_active {
+            ctx.request_repaint_after(Duration::from_millis(32));
         }
 
         shell_ui::render_content(self, ctx);
@@ -2086,6 +2163,13 @@ impl eframe::App for VeilApp {
         shell_ui::render_window_chrome(self, ctx);
         self.render_privacy_panel(ctx);
     }
+}
+
+fn image_decode_concurrency() -> usize {
+    let cores = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(4);
+    (cores / 2).clamp(2, MAX_IMAGE_LOADS)
 }
 
 fn sidebar_action(
@@ -2258,6 +2342,7 @@ fn install_web_fonts(
     fonts: &[WebFontResource],
     registry: &mut HashMap<String, Vec<u8>>,
 ) {
+    let mut changed = false;
     for font in fonts {
         let bytes = font.bytes.as_slice();
         let supported = bytes.starts_with(&[0x00, 0x01, 0x00, 0x00])
@@ -2271,10 +2356,16 @@ fn install_web_fonts(
         if family.is_empty() {
             continue;
         }
-        registry.insert(family, font.bytes.clone());
+        let identical = registry
+            .get(&family)
+            .is_some_and(|existing| existing.as_slice() == bytes);
+        if !identical {
+            registry.insert(family, font.bytes.clone());
+            changed = true;
+        }
     }
 
-    if registry.is_empty() {
+    if registry.is_empty() || !changed {
         return;
     }
 
