@@ -278,7 +278,7 @@ Required gates:
    - profile creation;
    - settings/preferences;
    - crash-safe restart;
-   - private browsing if enabled by product configuration.
+   - private browsing launches and isolates state using upstream Gecko behavior.
 
 7. Installer smoke tests
    - silent install;
@@ -330,7 +330,7 @@ Veil 0.9.0 is complete when all of the following are true:
 - a Windows x64 MSI installs the complete Gecko-based Veil runtime;
 - the GitHub release publishes the MSI, SHA-256 and exact source/revision information.
 
-At that point it is accurate to say: "Veil Browser is built on the actual Mozilla Gecko engine at revision <recorded SHA>, with a small Veil product patch layer." It is not accurate to claim Veil is Firefox or officially associated with Mozilla.
+At that point it is accurate to say: "Veil Browser is built on the actual Mozilla Gecko engine at the exact revision recorded in `gecko/REVISION`, with a small Veil product patch layer." It is not accurate to claim Veil is Firefox or officially associated with Mozilla.
 
 ## 16. Authoritative references used for this design
 
