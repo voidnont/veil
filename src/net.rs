@@ -77,7 +77,7 @@ impl PrivacyNetwork {
         headers.insert(
             USER_AGENT,
             HeaderValue::from_static(
-                "Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.2 VeilEngine/0.8.2",
+                "Mozilla/5.0 (Veil; privacy) VeilBrowser/0.8.3 VeilEngine/0.8.3",
             ),
         );
         headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.7"));

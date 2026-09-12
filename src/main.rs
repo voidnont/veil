@@ -765,6 +765,8 @@ impl VeilApp {
             self.go_forward();
         }
         if ctrl && ctx.input(|i| i.key_pressed(egui::Key::L)) {
+            self.window_controls_revealed = true;
+            self.window_controls_hover_since = None;
             ctx.memory_mut(|mem| mem.request_focus(egui::Id::new("veil_address_bar")));
         }
         if ctrl && ctx.input(|i| i.key_pressed(egui::Key::K)) {
@@ -772,6 +774,8 @@ impl VeilApp {
             let target = if self.tabs[self.active_tab].page.url == HOME {
                 egui::Id::new(("veil_home_search", tab_id))
             } else {
+                self.window_controls_revealed = true;
+                self.window_controls_hover_since = None;
                 egui::Id::new("veil_address_bar")
             };
             ctx.memory_mut(|mem| mem.request_focus(target));
@@ -807,13 +811,14 @@ impl VeilApp {
             }
         }
 
-        let screen = ctx.screen_rect();
-        let over_controls_hotspot = pointer
-            .map(|pos| pos.y <= 46.0 && pos.x >= screen.right() - 166.0)
-            .unwrap_or(false);
-        if over_controls_hotspot {
+        let over_top_edge = pointer.map(|pos| pos.y <= 12.0).unwrap_or(false);
+        let over_open_top =
+            self.window_controls_revealed && pointer.map(|pos| pos.y <= 76.0).unwrap_or(false);
+        if over_open_top {
+            self.window_controls_hover_since = None;
+        } else if over_top_edge {
             let started = self.window_controls_hover_since.get_or_insert(now);
-            if self.window_controls_revealed || now.duration_since(*started) >= HOVER_REVEAL_DELAY {
+            if now.duration_since(*started) >= HOVER_REVEAL_DELAY {
                 self.window_controls_revealed = true;
                 self.window_controls_hover_since = None;
             } else {
@@ -1181,7 +1186,7 @@ impl VeilApp {
                     ui.set_min_width(width);
                     ui.set_max_width(width);
                     ui.horizontal(|ui| {
-                        ui.heading("Privacy Shield");
+                        ui.heading("◈  Privacy Shield");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("×").clicked() {
                                 self.show_privacy = false;
@@ -1198,20 +1203,20 @@ impl VeilApp {
                             ui.strong(format!("Site: {host}"));
                             let mut settings = self.profiles.for_host(host);
                             let before = settings;
-                            ui.checkbox(&mut settings.shields, "Block ads & trackers");
-                            ui.checkbox(&mut settings.block_third_party, "Strict third-party blocking");
-                            ui.checkbox(&mut settings.load_images, "Load images");
-                            ui.checkbox(&mut settings.javascript, "Run JavaScript VM");
+                            ui.checkbox(&mut settings.shields, "◈  Block ads & trackers");
+                            ui.checkbox(&mut settings.block_third_party, "⊘  Strict third-party blocking");
+                            ui.checkbox(&mut settings.load_images, "▧  Load images");
+                            ui.checkbox(&mut settings.javascript, "⌘  Run JavaScript VM");
                             if settings != before {
                                 self.profiles.set_for_host(host, settings);
                                 reload_after_change = true;
                             }
-                            if ui.button("Reset site privacy").clicked() {
+                            if ui.button("↺  Reset site privacy").clicked() {
                                 self.profiles.clear_for_host(host);
                                 reload_after_change = true;
                             }
                             if let Some(url) = current_url.as_ref() {
-                                if ui.button("Clear this site's in-memory data").clicked() {
+                                if ui.button("⌫  Clear this site's in-memory data").clicked() {
                                     self.storage.clear_site(url);
                                     reload_after_change = true;
                                 }
@@ -1221,12 +1226,12 @@ impl VeilApp {
                         }
 
                         ui.separator();
-                        ui.strong("Glass shell");
-                        ui.add(egui::Slider::new(&mut self.glass_transparency, 0.00..=0.40).text("Glass transparency"));
+                        ui.strong("◫  Glass shell");
+                        ui.add(egui::Slider::new(&mut self.glass_transparency, 0.00..=0.40).text("◐  Glass transparency"));
                         ui.label(RichText::new("Default: 12% transparent chrome. Lower values are more opaque and calmer.").small().color(Color32::GRAY));
 
                         ui.separator();
-                        ui.strong("Fingerprint reduction");
+                        ui.strong("◎  Fingerprint reduction");
                         ui.label("Fixed Veil Browser user agent · fixed language · no client hints");
                         ui.label("GPC: 1 · DNT: 1 · no Referer");
                         ui.label("Cookies/localStorage are partitioned and memory-only.");
@@ -1234,14 +1239,14 @@ impl VeilApp {
 
                         ui.separator();
                         let stats = self.network.blocker().stats();
-                        ui.strong("Ad/tracker filter engine");
+                        ui.strong("≡  Ad/tracker filter engine");
                         ui.label(format!(
                             "{} network · {} exceptions · {} cosmetic · {} ignored",
                             stats.network_rules, stats.exception_rules, stats.cosmetic_rules, stats.ignored_rules
                         ));
-                        ui.collapsing("Custom filter list", |ui| {
+                        ui.collapsing("✎  Custom filter list", |ui| {
                             ui.add(egui::TextEdit::multiline(&mut self.custom_filters).desired_rows(7).code_editor());
-                            if ui.button("Apply filters").clicked() {
+                            if ui.button("✓  Apply filters").clicked() {
                                 self.network.blocker_mut().replace_custom_filters(self.custom_filters.clone());
                                 reload_after_change = true;
                             }
@@ -1249,7 +1254,7 @@ impl VeilApp {
 
                         ui.separator();
                         let page = &self.tabs[self.active_tab].page;
-                        ui.strong("Current page");
+                        ui.strong("▤  Current page");
                         ui.label(format!("Linked CSS: {}", page.external_stylesheets));
                         ui.label(format!("External scripts: {}", page.external_scripts));
                         ui.label(format!("Cosmetic elements hidden: {}", page.cosmetic_hidden));
@@ -1270,16 +1275,16 @@ impl VeilApp {
                         ui.separator();
                         ui.label(format!("Blocked this session: {}", self.worker_blocked_count));
                         ui.horizontal(|ui| {
-                            if ui.button("Clear image cache").clicked() {
+                            if ui.button("▧  Clear image cache").clicked() {
                                 self.image_cache.clear();
                             }
-                            if ui.button("Clear all session data").clicked() {
+                            if ui.button("⌫  Clear all session data").clicked() {
                                 self.storage.clear_all();
                                 self.image_cache.clear();
                                 reload_after_change = true;
                             }
                         });
-                        ui.strong("Recent blocks");
+                        ui.strong("☷  Recent blocks");
                         ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
                             if self.blocked_log.is_empty() {
                                 ui.label(RichText::new("Nothing blocked yet.").color(Color32::GRAY));

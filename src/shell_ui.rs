@@ -411,6 +411,9 @@ pub(crate) fn render_window_chrome(app: &mut VeilApp, ctx: &egui::Context) {
 }
 
 pub(crate) fn render_address_pill(app: &mut VeilApp, ctx: &egui::Context) {
+    if !app.window_controls_revealed {
+        return;
+    }
     let screen = ctx.screen_rect();
     let sidebar_right = 8.0 + EXPANDED_DOCK_WIDTH;
     let content_left = sidebar_right + 16.0;
