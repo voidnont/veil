@@ -14,8 +14,9 @@ from tools.gecko_manifest import (
 
 class GeckoManifestTests(unittest.TestCase):
     def make_repo(self) -> Path:
-        root = Path(self.addCleanup(tempfile.TemporaryDirectory().cleanup) if False else tempfile.mkdtemp())
-        self.addCleanup(lambda: __import__('shutil').rmtree(root, ignore_errors=True))
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        root = Path(temp_dir.name)
         (root / "gecko" / "patches").mkdir(parents=True)
         return root
 
