@@ -34,10 +34,10 @@
 - Consumes: upstream `browser/branding/unofficial` copied during bootstrap.
 - Produces: Veil display name, vendor string, shortcut name, and full product name.
 
-- [ ] Write tests that require `Veil`, `Veil Browser`, a non-Mozilla vendor, and forbid `Firefox`, `Nightly`, and `Mozilla` in Veil brand strings.
-- [ ] Confirm the tests fail before the overlay files exist.
-- [ ] Add minimal Veil branding metadata and strings.
-- [ ] Run the Stage B tests to green.
+- [x] Write tests that require `Veil`, `Veil Browser`, a non-Mozilla vendor, and forbid `Firefox`, `Nightly`, and `Mozilla` in Veil brand strings.
+- [x] Confirm the tests fail before the overlay files exist.
+- [x] Add minimal Veil branding metadata and strings.
+- [x] Run the Stage B tests to green.
 
 ### Task 2: Apply branding overlay during bootstrap
 
@@ -51,10 +51,10 @@
 - Consumes: pinned Gecko checkout and `gecko/branding` overlay.
 - Produces: `browser/branding/veil` inside the external Gecko checkout.
 
-- [ ] Add tests for overlay destination, replacement semantics, and forbidden brand strings.
-- [ ] Implement a Python overlay helper that copies upstream unofficial branding to `browser/branding/veil`, overlays Veil files, and validates the result.
-- [ ] Call that helper from both bootstrap scripts after revision verification/patch application.
-- [ ] Run Stage A + Stage B tests to green.
+- [x] Add tests for overlay destination, replacement semantics, and forbidden brand strings.
+- [x] Implement a Python overlay helper that copies upstream unofficial branding to `browser/branding/veil`, overlays Veil files, and validates the result.
+- [x] Call that helper from both bootstrap scripts after revision verification/patch application.
+- [x] Run Stage A + Stage B tests to green.
 
 ### Task 3: Switch full builds to Veil branding
 
@@ -68,10 +68,10 @@
 - Consumes: generated `browser/branding/veil` source directory.
 - Produces: Windows/Linux Gecko builds configured with `--with-branding=browser/branding/veil`.
 
-- [ ] Change tests to require the Veil branding path and reject official/unofficial branding paths.
-- [ ] Update both mozconfigs.
-- [ ] Include Stage B identity tests in Linux and Windows fast CI verification.
-- [ ] Verify no existing Rust 0.8.9 runtime/release workflow is altered.
+- [x] Change tests to require the Veil branding path and reject official/unofficial branding paths.
+- [x] Update both mozconfigs.
+- [x] Include Stage B identity tests in Linux and Windows fast CI verification.
+- [x] Verify no existing Rust 0.8.9 runtime/release workflow is altered.
 
 ### Task 4: Verify on main and choose next step
 
