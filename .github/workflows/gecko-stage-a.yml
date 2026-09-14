@@ -1,0 +1,198 @@
+name: Veil Gecko Stage A
+
+on:
+  push:
+    branches:
+      - work/veil-0.9.0-gecko-stage-a
+    paths:
+      - "gecko/**"
+      - "scripts/gecko-*"
+      - "tools/gecko_manifest.py"
+      - "tests/test_gecko_*"
+      - ".github/workflows/gecko-stage-a.yml"
+  pull_request:
+    paths:
+      - "gecko/**"
+      - "scripts/gecko-*"
+      - "tools/gecko_manifest.py"
+      - "tests/test_gecko_*"
+      - ".github/workflows/gecko-stage-a.yml"
+  workflow_dispatch:
+    inputs:
+      full_build:
+        description: "Run the full pinned Gecko builds on Linux and Windows x64"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify Stage A manifests and scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Run Gecko manifest tests
+        run: python -m unittest tests.test_gecko_manifest tests.test_gecko_stage_a_files -v
+
+      - name: Verify pinned manifest
+        run: python tools/gecko_manifest.py --repo-root . --manifest-only
+
+      - name: Check Bash syntax
+        run: bash -n scripts/gecko-verify.sh scripts/gecko-bootstrap.sh scripts/gecko-build.sh
+
+      - name: Check whitespace errors
+        run: git diff --check HEAD^ HEAD || git diff --check
+
+  verify-windows:
+    name: Verify PowerShell Stage A scripts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Run Gecko tests on Windows
+        run: python -m unittest tests.test_gecko_manifest tests.test_gecko_stage_a_files -v
+
+      - name: Verify pinned manifest
+        run: python tools/gecko_manifest.py --repo-root . --manifest-only
+
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $files = @(
+            "scripts/gecko-verify.ps1",
+            "scripts/gecko-bootstrap.ps1",
+            "scripts/gecko-build.ps1"
+          )
+          foreach ($file in $files) {
+            [void][scriptblock]::Create((Get-Content -Raw $file))
+          }
+
+  linux-full-build:
+    name: Full Gecko build - Linux
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_build == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Reclaim runner disk space
+        shell: bash
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet /opt/hostedtoolcache/CodeQL || true
+          df -h
+
+      - name: Bootstrap exact pinned Gecko revision
+        run: ./scripts/gecko-bootstrap.sh
+
+      - name: Build and package full Gecko browser
+        shell: bash
+        run: |
+          set -o pipefail
+          ./scripts/gecko-build.sh 2>&1 | tee gecko-build-linux.log
+
+      - name: Record exact Linux build metadata
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p build-metadata
+          cp gecko/REVISION build-metadata/gecko-revision.txt
+          if [ -d .gecko-src/.git ]; then
+            git -C .gecko-src rev-parse HEAD > build-metadata/gecko-checkout-head.txt
+          fi
+          if [ -f gecko-build-linux.log ]; then
+            tail -n 250 gecko-build-linux.log > build-metadata/gecko-build-log-tail.txt
+          fi
+
+      - name: Upload Linux build metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gecko-build-metadata-linux
+          path: build-metadata
+          if-no-files-found: error
+
+      - name: Upload Linux packaged runtime
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veil-gecko-linux-package
+          path: |
+            .gecko-src/obj-veil/dist/*.tar.*
+            .gecko-src/obj-veil/dist/*.zip
+          if-no-files-found: warn
+
+  windows-full-build:
+    name: Full Gecko build - Windows x64
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_build == true }}
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install MozillaBuild
+        shell: powershell
+        run: |
+          choco install mozillabuild --no-progress -y
+          "C:\mozilla-build\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Bootstrap exact pinned Gecko revision
+        shell: pwsh
+        run: ./scripts/gecko-bootstrap.ps1
+
+      - name: Build and package full Gecko browser
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/gecko-build.ps1 *>&1 | Tee-Object -FilePath gecko-build-windows.log
+
+      - name: Record exact Windows build metadata
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path build-metadata -Force | Out-Null
+          Copy-Item gecko/REVISION build-metadata/gecko-revision.txt
+          if (Test-Path .gecko-src/.git) {
+            git -C .gecko-src rev-parse HEAD | Set-Content build-metadata/gecko-checkout-head.txt
+          }
+          if (Test-Path gecko-build-windows.log) {
+            Get-Content gecko-build-windows.log -Tail 250 | Set-Content build-metadata/gecko-build-log-tail.txt
+          }
+
+      - name: Upload Windows build metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gecko-build-metadata-windows
+          path: build-metadata
+          if-no-files-found: error
+
+      - name: Upload Windows packaged runtime
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veil-gecko-windows-package
+          path: |
+            .gecko-src/obj-veil/dist/*.zip
+            .gecko-src/obj-veil/dist/*.exe
+            .gecko-src/obj-veil/dist/*.msi
+          if-no-files-found: warn
