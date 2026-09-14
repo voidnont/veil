@@ -1,20 +1,22 @@
-name: Veil Gecko Stage A
+name: Veil Gecko Migration
 
 on:
   push:
-    branches:
-      - work/veil-0.9.0-gecko-stage-a
+    branches: [main]
     paths:
       - "gecko/**"
       - "scripts/gecko-*"
       - "tools/gecko_manifest.py"
+      - "tools/gecko_branding.py"
       - "tests/test_gecko_*"
       - ".github/workflows/gecko-stage-a.yml"
   pull_request:
+    branches: [main]
     paths:
       - "gecko/**"
       - "scripts/gecko-*"
       - "tools/gecko_manifest.py"
+      - "tools/gecko_branding.py"
       - "tests/test_gecko_*"
       - ".github/workflows/gecko-stage-a.yml"
   workflow_dispatch:
@@ -30,7 +32,7 @@ permissions:
 
 jobs:
   verify:
-    name: Verify Stage A manifests and scripts
+    name: Verify Gecko manifests and Veil branding
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -39,8 +41,8 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Run Gecko manifest tests
-        run: python -m unittest tests.test_gecko_manifest tests.test_gecko_stage_a_files -v
+      - name: Run Gecko migration tests
+        run: python -m unittest tests.test_gecko_manifest tests.test_gecko_stage_a_files tests.test_gecko_stage_b_identity -v
 
       - name: Verify pinned manifest
         run: python tools/gecko_manifest.py --repo-root . --manifest-only
@@ -52,7 +54,7 @@ jobs:
         run: git diff --check HEAD^ HEAD || git diff --check
 
   verify-windows:
-    name: Verify PowerShell Stage A scripts
+    name: Verify Windows Gecko scripts and Veil branding
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -61,8 +63,8 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Run Gecko tests on Windows
-        run: python -m unittest tests.test_gecko_manifest tests.test_gecko_stage_a_files -v
+      - name: Run Gecko migration tests on Windows
+        run: python -m unittest tests.test_gecko_manifest tests.test_gecko_stage_a_files tests.test_gecko_stage_b_identity -v
 
       - name: Verify pinned manifest
         run: python tools/gecko_manifest.py --repo-root . --manifest-only
@@ -97,7 +99,7 @@ jobs:
           sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet /opt/hostedtoolcache/CodeQL || true
           df -h
 
-      - name: Bootstrap exact pinned Gecko revision
+      - name: Bootstrap exact pinned Gecko revision with Veil branding
         run: ./scripts/gecko-bootstrap.sh
 
       - name: Build and package full Gecko browser
@@ -155,7 +157,7 @@ jobs:
           choco install mozillabuild --no-progress -y
           "C:\mozilla-build\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Bootstrap exact pinned Gecko revision
+      - name: Bootstrap exact pinned Gecko revision with Veil branding
         shell: pwsh
         run: ./scripts/gecko-bootstrap.ps1
 

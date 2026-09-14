@@ -43,4 +43,8 @@ while IFS= read -r raw || [[ -n "$raw" ]]; do
   git -C "$SOURCE_DIR" apply --whitespace=nowarn "$REPO_ROOT/gecko/patches/$line"
 done < "$SERIES_FILE"
 
-echo "Prepared Gecko $REVISION in $SOURCE_DIR"
+python3 "$REPO_ROOT/tools/gecko_branding.py" \
+  --repo-root "$REPO_ROOT" \
+  --source "$SOURCE_DIR"
+
+echo "Prepared Gecko $REVISION with Veil branding in $SOURCE_DIR"

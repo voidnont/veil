@@ -4,4 +4,5 @@ mk_add_options AUTOCLOBBER=1
 ac_add_options --enable-application=browser
 ac_add_options --enable-optimize
 ac_add_options --disable-debug
-ac_add_options --with-branding=browser/branding/unofficial
+ac_add_options --with-branding=browser/branding/veil
+ac_add_options --with-distribution-id=app.veil

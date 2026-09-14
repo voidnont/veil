@@ -12,6 +12,7 @@ $UpstreamUrl = "https://github.com/mozilla-firefox/firefox.git"
 $RevisionFile = Join-Path $RepoRoot "gecko\REVISION"
 $SeriesFile = Join-Path $RepoRoot "gecko\patches\series"
 $Verifier = Join-Path $RepoRoot "tools\gecko_manifest.py"
+$Branding = Join-Path $RepoRoot "tools\gecko_branding.py"
 
 $Python = Get-Command python.exe -ErrorAction SilentlyContinue
 if (-not $Python) {
@@ -79,4 +80,9 @@ foreach ($RawLine in Get-Content $SeriesFile) {
     Invoke-Checked { git -C $SourceDir apply --whitespace=nowarn $PatchPath } "git apply $Line"
 }
 
-Write-Host "Prepared Gecko $Revision in $SourceDir"
+& $Python.Source $Branding --repo-root $RepoRoot --source $SourceDir
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+Write-Host "Prepared Gecko $Revision with Veil branding in $SourceDir"
