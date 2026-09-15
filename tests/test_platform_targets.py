@@ -36,6 +36,7 @@ class PlatformTargetTests(unittest.TestCase):
         self.assertIn("mach build", build_script)
         self.assertIn("publishWithGeckoBinariesDebugPublicationToMavenRepository", build_script)
         self.assertIn("archive-geckoview", build_script)
+        self.assertIn('rootProject.name = "veil-gecko-android"', build_script)
 
         gradle = self.read("mobile/android/app/build.gradle")
         self.assertIn("substitute-local-geckoview.gradle", gradle)

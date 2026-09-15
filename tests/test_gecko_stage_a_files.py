@@ -64,7 +64,8 @@ class GeckoStageAFilesTests(unittest.TestCase):
         self.assertIn("full_build", workflow)
         self.assertIn("gecko/REVISION", workflow)
         self.assertIn("MozillaBuild", workflow)
-        self.assertIn("tests.test_gecko_stage_b_identity", workflow)
+        self.assertIn("unittest discover -s tests -p 'test_*.py' -v", workflow)
+        self.assertIn("tools/gecko_prefs.py", workflow)
 
 
 if __name__ == "__main__":
