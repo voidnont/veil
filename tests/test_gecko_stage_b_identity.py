@@ -15,7 +15,7 @@ class GeckoStageBIdentityTests(unittest.TestCase):
         configure = (ROOT / "gecko" / "branding" / "configure.sh").read_text(encoding="utf-8")
         self.assertIn("MOZ_APP_DISPLAYNAME=Veil", configure)
         self.assertIn("MOZ_APP_BASENAME=Veil", configure)
-        self.assertIn("MOZ_APP_VENDOR=Veil", configure)
+        self.assertNotIn("MOZ_APP_VENDOR", configure)
         self.assertIn("MOZ_MACBUNDLE_ID=app.veil.browser", configure)
 
         fluent = (ROOT / "gecko" / "branding" / "locales" / "en-US" / "brand.ftl").read_text(encoding="utf-8")
