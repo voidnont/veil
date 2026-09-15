@@ -5,24 +5,28 @@ on:
     branches: [main]
     paths:
       - "gecko/**"
+      - "mobile/android/**"
       - "scripts/gecko-*"
       - "tools/gecko_manifest.py"
       - "tools/gecko_branding.py"
       - "tests/test_gecko_*"
+      - "tests/test_platform_targets.py"
       - ".github/workflows/gecko-stage-a.yml"
   pull_request:
     branches: [main]
     paths:
       - "gecko/**"
+      - "mobile/android/**"
       - "scripts/gecko-*"
       - "tools/gecko_manifest.py"
       - "tools/gecko_branding.py"
       - "tests/test_gecko_*"
+      - "tests/test_platform_targets.py"
       - ".github/workflows/gecko-stage-a.yml"
   workflow_dispatch:
     inputs:
       full_build:
-        description: "Run the full pinned Gecko builds on Linux and Windows x64"
+        description: "Run full pinned Gecko builds for Linux, Windows, macOS, and Android"
         required: true
         default: false
         type: boolean
@@ -42,13 +46,13 @@ jobs:
           python-version: "3.13"
 
       - name: Run Gecko migration tests
-        run: python -m unittest tests.test_gecko_manifest tests.test_gecko_stage_a_files tests.test_gecko_stage_b_identity -v
+        run: python -m unittest tests.test_gecko_manifest tests.test_gecko_stage_a_files tests.test_gecko_stage_b_identity tests.test_platform_targets -v
 
       - name: Verify pinned manifest
         run: python tools/gecko_manifest.py --repo-root . --manifest-only
 
       - name: Check Bash syntax
-        run: bash -n scripts/gecko-verify.sh scripts/gecko-bootstrap.sh scripts/gecko-build.sh
+        run: bash -n scripts/gecko-verify.sh scripts/gecko-bootstrap.sh scripts/gecko-build.sh scripts/gecko-build-android.sh
 
       - name: Check whitespace errors
         run: git diff --check HEAD^ HEAD || git diff --check
@@ -64,7 +68,7 @@ jobs:
           python-version: "3.13"
 
       - name: Run Gecko migration tests on Windows
-        run: python -m unittest tests.test_gecko_manifest tests.test_gecko_stage_a_files tests.test_gecko_stage_b_identity -v
+        run: python -m unittest tests.test_gecko_manifest tests.test_gecko_stage_a_files tests.test_gecko_stage_b_identity tests.test_platform_targets -v
 
       - name: Verify pinned manifest
         run: python tools/gecko_manifest.py --repo-root . --manifest-only
@@ -198,3 +202,135 @@ jobs:
             .gecko-src/obj-veil/dist/*.exe
             .gecko-src/obj-veil/dist/*.msi
           if-no-files-found: warn
+
+  macos-full-build:
+    name: Full Gecko build - macOS
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.full_build == true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[gecko-full]')) }}
+    runs-on: macos-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Bootstrap exact pinned Gecko revision with Veil branding
+        run: ./scripts/gecko-bootstrap.sh
+
+      - name: Build and package full Gecko browser
+        shell: bash
+        run: |
+          set -o pipefail
+          ./scripts/gecko-build.sh 2>&1 | tee gecko-build-macos.log
+
+      - name: Record exact macOS build metadata
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p build-metadata
+          cp gecko/REVISION build-metadata/gecko-revision.txt
+          if [ -d .gecko-src/.git ]; then
+            git -C .gecko-src rev-parse HEAD > build-metadata/gecko-checkout-head.txt
+          fi
+          if [ -f gecko-build-macos.log ]; then
+            tail -n 250 gecko-build-macos.log > build-metadata/gecko-build-log-tail.txt
+          fi
+
+      - name: Upload macOS build metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gecko-build-metadata-macos
+          path: build-metadata
+          if-no-files-found: error
+
+      - name: Upload macOS packaged runtime
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veil-gecko-macos-package
+          path: |
+            .gecko-src/obj-veil/dist/*.dmg
+            .gecko-src/obj-veil/dist/*.tar.*
+            .gecko-src/obj-veil/dist/*.zip
+          if-no-files-found: warn
+
+  android-geckoview-build:
+    name: Full GeckoView build - Android ARM64
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.full_build == true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[gecko-full]')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+
+      - name: Reclaim runner disk space without removing Android tooling
+        shell: bash
+        run: |
+          sudo rm -rf /opt/ghc /usr/share/dotnet /opt/hostedtoolcache/CodeQL || true
+          df -h
+
+      - name: Bootstrap exact pinned Gecko revision
+        run: ./scripts/gecko-bootstrap.sh
+
+      - name: Build pinned GeckoView and local Maven publication
+        shell: bash
+        run: |
+          set -o pipefail
+          ./scripts/gecko-build-android.sh 2>&1 | tee gecko-build-android.log
+
+      - name: Build Veil Android APK against local GeckoView
+        working-directory: mobile/android
+        env:
+          VEIL_GECKO_SOURCE: ${{ github.workspace }}/.gecko-src
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Record exact Android build metadata
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p build-metadata
+          cp gecko/REVISION build-metadata/gecko-revision.txt
+          if [ -d .gecko-src/.git ]; then
+            git -C .gecko-src rev-parse HEAD > build-metadata/gecko-checkout-head.txt
+          fi
+          if [ -f gecko-build-android.log ]; then
+            tail -n 250 gecko-build-android.log > build-metadata/gecko-build-log-tail.txt
+          fi
+
+      - name: Upload Android build metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gecko-build-metadata-android
+          path: build-metadata
+          if-no-files-found: error
+
+      - name: Upload pinned GeckoView AAR
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veil-geckoview-android-aar
+          path: .gecko-src/obj-veil-android/gradle/build/mobile/android/geckoview/outputs/aar/*.aar
+          if-no-files-found: warn
+
+      - name: Upload Veil Android APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veil-android-debug-apk
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
