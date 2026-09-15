@@ -9,6 +9,7 @@ on:
       - "scripts/gecko-*"
       - "tools/gecko_manifest.py"
       - "tools/gecko_branding.py"
+      - "tools/gecko_prefs.py"
       - "tests/test_gecko_*"
       - "tests/test_platform_targets.py"
       - ".github/workflows/gecko-stage-a.yml"
@@ -20,6 +21,7 @@ on:
       - "scripts/gecko-*"
       - "tools/gecko_manifest.py"
       - "tools/gecko_branding.py"
+      - "tools/gecko_prefs.py"
       - "tests/test_gecko_*"
       - "tests/test_platform_targets.py"
       - ".github/workflows/gecko-stage-a.yml"
@@ -36,7 +38,7 @@ permissions:
 
 jobs:
   verify:
-    name: Verify Gecko manifests and Veil branding
+    name: Verify Gecko manifests, branding, and privacy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -46,7 +48,7 @@ jobs:
           python-version: "3.13"
 
       - name: Run Gecko migration tests
-        run: python -m unittest tests.test_gecko_manifest tests.test_gecko_stage_a_files tests.test_gecko_stage_b_identity tests.test_platform_targets -v
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
 
       - name: Verify pinned manifest
         run: python tools/gecko_manifest.py --repo-root . --manifest-only
@@ -58,7 +60,7 @@ jobs:
         run: git diff --check HEAD^ HEAD || git diff --check
 
   verify-windows:
-    name: Verify Windows Gecko scripts and Veil branding
+    name: Verify Windows Gecko scripts, branding, and privacy
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -68,7 +70,7 @@ jobs:
           python-version: "3.13"
 
       - name: Run Gecko migration tests on Windows
-        run: python -m unittest tests.test_gecko_manifest tests.test_gecko_stage_a_files tests.test_gecko_stage_b_identity tests.test_platform_targets -v
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
 
       - name: Verify pinned manifest
         run: python tools/gecko_manifest.py --repo-root . --manifest-only
