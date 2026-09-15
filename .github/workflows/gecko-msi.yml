@@ -1,0 +1,147 @@
+name: Package Veil Gecko MSI
+
+on:
+  workflow_run:
+    workflows: ["Veil Gecko Migration"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: "Veil Gecko Migration run ID containing veil-gecko-windows-package"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  package-msi:
+    name: Build and verify Gecko MSI
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Resolve source run
+        id: source
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $runId = "${{ inputs.source_run_id }}"
+          } else {
+            $runId = "${{ github.event.workflow_run.id }}"
+          }
+          if (-not $runId) {
+            throw "No Gecko workflow run ID was provided."
+          }
+          "run_id=$runId" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Using Gecko workflow run $runId"
+
+      - name: Download successful Windows Gecko package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Path downloaded -Force | Out-Null
+          gh run download "${{ steps.source.outputs.run_id }}" --repo "${{ github.repository }}" -n veil-gecko-windows-package -D downloaded
+          $archives = Get-ChildItem downloaded -Recurse -File -Filter *.zip | Where-Object {
+            $_.Name -notmatch 'symbols|tests|crashreporter'
+          }
+          if (-not $archives) {
+            throw "No packaged Gecko runtime ZIP was found in the Windows artifact."
+          }
+          $archive = $archives | Sort-Object Length -Descending | Select-Object -First 1
+          Write-Host "Using runtime archive: $($archive.FullName) ($($archive.Length) bytes)"
+          New-Item -ItemType Directory -Path runtime -Force | Out-Null
+          Expand-Archive -LiteralPath $archive.FullName -DestinationPath runtime -Force
+          $browser = Get-ChildItem runtime -Recurse -File | Where-Object {
+            $_.Name -ieq 'veil.exe' -or $_.Name -ieq 'firefox.exe'
+          } | Sort-Object @{Expression={ if ($_.Name -ieq 'veil.exe') { 0 } else { 1 } }}, FullName | Select-Object -First 1
+          if (-not $browser) {
+            throw "Expanded Gecko package does not contain veil.exe or firefox.exe."
+          }
+          "VEIL_RUNTIME_ROOT=$($browser.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Runtime root: $($browser.Directory.FullName)"
+          Write-Host "Browser executable: $($browser.FullName)"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Test MSI manifest generator
+        shell: pwsh
+        run: python -m unittest tests.test_gecko_msi_manifest -v
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Install WiX Toolset 5.0.2
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+          $version = wix --version
+          Write-Host "WiX $version"
+          if (-not ($version -like '5.0.2*')) {
+            throw "Expected WiX 5.0.2 but got $version"
+          }
+
+      - name: Generate full Gecko WiX manifest
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path msi -Force | Out-Null
+          python tools/gecko_msi_manifest.py --source "$env:VEIL_RUNTIME_ROOT" --output msi/veil-gecko.wxs --version 0.9.0
+          if (-not (Test-Path msi/veil-gecko.wxs)) {
+            throw "WiX manifest was not generated."
+          }
+
+      - name: Build Gecko MSI
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:USERPROFILE\.dotnet\tools;$env:PATH"
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          wix build msi/veil-gecko.wxs -arch x64 -o dist/Veil-Browser-0.9.0-Gecko-x64.msi
+          $msi = Get-Item dist/Veil-Browser-0.9.0-Gecko-x64.msi
+          if ($msi.Length -lt 10000000) {
+            throw "Gecko MSI is unexpectedly small: $($msi.Length) bytes"
+          }
+          Write-Host "MSI size: $($msi.Length) bytes"
+
+      - name: Verify MSI can perform an administrative install
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $msi = (Resolve-Path dist/Veil-Browser-0.9.0-Gecko-x64.msi).Path
+          $target = Join-Path $PWD "msi-verify"
+          New-Item -ItemType Directory -Path $target -Force | Out-Null
+          $process = Start-Process msiexec.exe -ArgumentList @('/a', "`"$msi`"", '/qn', "TARGETDIR=`"$target`"") -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "MSI administrative install failed with exit code $($process.ExitCode)."
+          }
+          $browser = Get-ChildItem $target -Recurse -File | Where-Object {
+            $_.Name -ieq 'veil.exe' -or $_.Name -ieq 'firefox.exe'
+          } | Select-Object -First 1
+          if (-not $browser) {
+            throw "MSI verification install did not contain the Gecko browser executable."
+          }
+          Write-Host "Verified installed browser: $($browser.FullName)"
+
+      - name: Create SHA256 checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist/Veil-Browser-0.9.0-Gecko-x64.msi -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  Veil-Browser-0.9.0-Gecko-x64.msi" | Set-Content dist/Veil-Browser-0.9.0-Gecko-x64.sha256 -Encoding ascii
+          Write-Host "SHA256: $hash"
+
+      - name: Upload verified Gecko MSI
+        uses: actions/upload-artifact@v4
+        with:
+          name: veil-gecko-windows-msi
+          path: |
+            dist/Veil-Browser-0.9.0-Gecko-x64.msi
+            dist/Veil-Browser-0.9.0-Gecko-x64.sha256
+          if-no-files-found: error
