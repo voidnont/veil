@@ -1,0 +1,184 @@
+name: Veil 0.9.0 Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  release:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[release-0.9.0]') }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: 0.9.0
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Find successful validated artifact runs
+        id: runs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_gecko_artifacts=(
+            "veil-gecko-windows-package"
+            "veil-gecko-linux-package"
+            "veil-gecko-macos-package"
+            "veil-android-debug-apk"
+          )
+          required_app_artifacts=(
+            "veil-ios-simulator-app"
+          )
+
+          run_has_artifacts() {
+            local run_id="$1"
+            shift
+            local required=("$@")
+            local names
+            names="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts" --jq '.artifacts[].name')"
+            for artifact in "${required[@]}"; do
+              if ! grep -Fxq "$artifact" <<<"$names"; then
+                return 1
+              fi
+            done
+          }
+
+          gecko_run_id=""
+          while read -r run_id; do
+            [ -n "$run_id" ] || continue
+            if run_has_artifacts "$run_id" "${required_gecko_artifacts[@]}"; then
+              gecko_run_id="$run_id"
+              break
+            fi
+          done < <(
+            gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/gecko-stage-a.yml/runs" \
+              -f branch=main -f status=success -f per_page=50 \
+              --jq '.workflow_runs[].id'
+          )
+
+          if [ -z "$gecko_run_id" ]; then
+            echo "No successful full Gecko run with all required release artifacts was found" >&2
+            exit 1
+          fi
+
+          app_run_id=""
+          while read -r run_id; do
+            [ -n "$run_id" ] || continue
+            if run_has_artifacts "$run_id" "${required_app_artifacts[@]}"; then
+              app_run_id="$run_id"
+              break
+            fi
+          done < <(
+            gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/veil.yml/runs" \
+              -f branch=main -f status=success -f per_page=50 \
+              --jq '.workflow_runs[].id'
+          )
+
+          if [ -z "$app_run_id" ]; then
+            echo "No successful Veil CI run with the iOS release artifact was found" >&2
+            exit 1
+          fi
+
+          echo "gecko_run_id=$gecko_run_id" >> "$GITHUB_OUTPUT"
+          echo "app_run_id=$app_run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download validated release artifacts
+        shell: bash
+        env:
+          GECKO_RUN_ID: ${{ steps.runs.outputs.gecko_run_id }}
+          APP_RUN_ID: ${{ steps.runs.outputs.app_run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-inputs dist
+
+          for artifact in \
+            veil-gecko-windows-package \
+            veil-gecko-linux-package \
+            veil-gecko-macos-package \
+            veil-android-debug-apk
+          do
+            gh run download "$GECKO_RUN_ID" -n "$artifact" -D "release-inputs/$artifact"
+          done
+
+          gh run download "$APP_RUN_ID" -n veil-ios-simulator-app -D release-inputs/veil-ios-simulator-app
+
+          find release-inputs/veil-gecko-windows-package -maxdepth 1 -type f -exec cp -f {} dist/ \;
+          find release-inputs/veil-gecko-linux-package -maxdepth 1 -type f -exec cp -f {} dist/ \;
+          find release-inputs/veil-gecko-macos-package -maxdepth 1 -type f -exec cp -f {} dist/ \;
+
+          apk="$(find release-inputs/veil-android-debug-apk -type f -name '*.apk' -print -quit)"
+          if [ -z "$apk" ]; then
+            echo "Android APK artifact was downloaded but no APK file was present" >&2
+            exit 1
+          fi
+          cp "$apk" "dist/Veil-${VERSION}-Android-arm64.apk"
+
+          ios_app="$(find release-inputs/veil-ios-simulator-app -type d -name 'Veil.app' -print -quit)"
+          if [ -z "$ios_app" ]; then
+            echo "iOS artifact was downloaded but Veil.app was not present" >&2
+            exit 1
+          fi
+          ios_parent="$(dirname "$ios_app")"
+          (
+            cd "$ios_parent"
+            zip -qry "$GITHUB_WORKSPACE/dist/Veil-${VERSION}-iOS-Simulator.zip" Veil.app
+          )
+
+          if [ -z "$(find dist -maxdepth 1 -type f -print -quit)" ]; then
+            echo "No release files were assembled" >&2
+            exit 1
+          fi
+
+      - name: Generate release checksums and notes
+        shell: bash
+        env:
+          GECKO_RUN_ID: ${{ steps.runs.outputs.gecko_run_id }}
+          APP_RUN_ID: ${{ steps.runs.outputs.app_run_id }}
+        run: |
+          set -euo pipefail
+          (
+            cd dist
+            sha256sum * > SHA256SUMS.txt
+          )
+
+          gecko_revision="$(tr -d '\r\n' < gecko/REVISION)"
+          cat > release-notes.md <<EOF
+          ## Veil ${VERSION}
+
+          Veil ${VERSION} moves the desktop browser to the pinned Mozilla Gecko browser stack and adds the new mobile targets.
+
+          ### Included builds
+          - Windows x64: packaged Veil Gecko runtime
+          - Linux: packaged Veil Gecko runtime
+          - macOS: packaged Veil Gecko runtime
+          - Android ARM64: Veil APK using the pinned GeckoView build
+          - iOS: unsigned Simulator build for validation and development
+
+          The iOS artifact is a Simulator build. A physical-device/App Store IPA requires Apple signing and provisioning and is not represented as a signed production IPA in this release.
+
+          Gecko revision: `${gecko_revision}`
+          Full Gecko/GeckoView validation run: `${GECKO_RUN_ID}`
+          iOS validation run: `${APP_RUN_ID}`
+
+          SHA-256 hashes are included in `SHA256SUMS.txt`.
+          EOF
+
+      - name: Publish GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+            gh release edit "$tag" --title "Veil ${VERSION}" --notes-file release-notes.md
+          else
+            gh release create "v${VERSION}" dist/* \
+              --target "$GITHUB_SHA" \
+              --title "Veil ${VERSION}" \
+              --notes-file release-notes.md
+          fi
