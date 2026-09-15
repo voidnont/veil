@@ -39,11 +39,12 @@ def validate_overlay(repo_root: Path | str) -> None:
     for assignment in (
         "MOZ_APP_DISPLAYNAME=Veil",
         "MOZ_APP_BASENAME=Veil",
-        "MOZ_APP_VENDOR=Veil",
         "MOZ_MACBUNDLE_ID=app.veil.browser",
     ):
         if assignment not in configure:
             raise BrandingError(f"missing Veil identity assignment: {assignment}")
+    if "MOZ_APP_VENDOR" in configure:
+        raise BrandingError("MOZ_APP_VENDOR must not be set by the Veil branding overlay")
 
     fluent = (root / "locales/en-US/brand.ftl").read_text(encoding="utf-8")
     for line in (
