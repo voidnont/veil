@@ -19,8 +19,8 @@ android {
         applicationId 'app.veil.browser'
         minSdk 26
         targetSdk 36
-        versionCode 89
-        versionName '0.8.9'
+        versionCode 90
+        versionName '0.9.0'
     }
 
     buildTypes {
