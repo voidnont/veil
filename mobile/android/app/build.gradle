@@ -1,0 +1,40 @@
+plugins {
+    id 'com.android.application'
+}
+
+def geckoSource = System.getenv('VEIL_GECKO_SOURCE')
+if (!geckoSource) {
+    throw new GradleException('VEIL_GECKO_SOURCE must point to the pinned Gecko checkout prepared by scripts/gecko-bootstrap.sh')
+}
+
+ext.topsrcdir = file(geckoSource).absolutePath
+ext.topobjdir = file("${ext.topsrcdir}/obj-veil-android").absolutePath
+apply from: "${ext.topsrcdir}/substitute-local-geckoview.gradle"
+
+android {
+    namespace 'app.veil.browser'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'app.veil.browser'
+        minSdk 26
+        targetSdk 36
+        versionCode 89
+        versionName '0.8.9'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'org.mozilla.geckoview:geckoview-nightly:+'
+}
