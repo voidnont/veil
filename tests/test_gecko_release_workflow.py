@@ -42,6 +42,13 @@ class GeckoReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("No successful full Gecko run with all required release artifacts was found", workflow)
         self.assertIn("No successful Veil CI run with the iOS release artifact was found", workflow)
 
+    def test_desktop_release_assets_get_platform_specific_names(self):
+        workflow = self.read(".github/workflows/release.yml")
+        for platform in ("Windows", "Linux", "macOS"):
+            with self.subTest(platform=platform):
+                self.assertIn(f'Veil-${{VERSION}}-{platform}-', workflow)
+        self.assertNotIn("-exec cp -f {} dist/", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
