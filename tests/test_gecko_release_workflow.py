@@ -44,9 +44,11 @@ class GeckoReleaseWorkflowTests(unittest.TestCase):
 
     def test_desktop_release_assets_get_platform_specific_names(self):
         workflow = self.read(".github/workflows/release.yml")
+        self.assertIn("copy_platform_artifacts()", workflow)
         for platform in ("Windows", "Linux", "macOS"):
             with self.subTest(platform=platform):
                 self.assertIn(f'Veil-${{VERSION}}-{platform}-', workflow)
+        self.assertIn("No ${platform} package files were present in the validated artifact", workflow)
         self.assertNotIn("-exec cp -f {} dist/", workflow)
 
 
