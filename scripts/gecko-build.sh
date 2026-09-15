@@ -14,7 +14,20 @@ python3 "$REPO_ROOT/tools/gecko_manifest.py" \
   --source "$SOURCE_DIR" \
   --allow-dirty
 
-cp "$REPO_ROOT/gecko/mozconfig.linux" "$SOURCE_DIR/.mozconfig"
+case "$(uname -s)" in
+  Darwin)
+    MOZCONFIG="$REPO_ROOT/gecko/mozconfig.macos"
+    ;;
+  Linux)
+    MOZCONFIG="$REPO_ROOT/gecko/mozconfig.linux"
+    ;;
+  *)
+    echo "error: scripts/gecko-build.sh supports Linux and macOS; use gecko-build.ps1 on Windows" >&2
+    exit 1
+    ;;
+esac
+
+cp "$MOZCONFIG" "$SOURCE_DIR/.mozconfig"
 
 cd "$SOURCE_DIR"
 ./mach --no-interactive bootstrap --application-choice="Firefox for Desktop"
