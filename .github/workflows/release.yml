@@ -107,9 +107,25 @@ jobs:
 
           gh run download "$APP_RUN_ID" -n veil-ios-simulator-app -D release-inputs/veil-ios-simulator-app
 
-          find release-inputs/veil-gecko-windows-package -maxdepth 1 -type f -exec cp -f {} dist/ \;
-          find release-inputs/veil-gecko-linux-package -maxdepth 1 -type f -exec cp -f {} dist/ \;
-          find release-inputs/veil-gecko-macos-package -maxdepth 1 -type f -exec cp -f {} dist/ \;
+          copy_platform_artifacts() {
+            local source_dir="$1"
+            local platform="$2"
+            local count=0
+            while IFS= read -r -d '' file; do
+              local base
+              base="$(basename "$file")"
+              cp "$file" "dist/Veil-${VERSION}-${platform}-${base}"
+              count=$((count + 1))
+            done < <(find "$source_dir" -maxdepth 1 -type f -print0)
+            if [ "$count" -eq 0 ]; then
+              echo "No ${platform} package files were present in the validated artifact" >&2
+              exit 1
+            fi
+          }
+
+          copy_platform_artifacts release-inputs/veil-gecko-windows-package Windows
+          copy_platform_artifacts release-inputs/veil-gecko-linux-package Linux
+          copy_platform_artifacts release-inputs/veil-gecko-macos-package macOS
 
           apk="$(find release-inputs/veil-android-debug-apk -type f -name '*.apk' -print -quit)"
           if [ -z "$apk" ]; then
