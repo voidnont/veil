@@ -17,6 +17,11 @@ python3 "$REPO_ROOT/tools/gecko_manifest.py" \
 cp "$REPO_ROOT/gecko/mozconfig.android" "$SOURCE_DIR/.mozconfig"
 
 SETTINGS_FILE="$SOURCE_DIR/settings.gradle"
+if [[ ! -f "$SETTINGS_FILE" ]]; then
+  echo "error: Gecko Gradle settings not found at $SETTINGS_FILE" >&2
+  exit 1
+fi
+
 GRADLE_ROOT_NAME='rootProject.name = "veil-gecko-android"'
 if ! grep -Fq "$GRADLE_ROOT_NAME" "$SETTINGS_FILE"; then
   printf '\n// Veil: Gradle 9 rejects hidden checkout directory names as root project names.\n%s\n' \
