@@ -1,0 +1,82 @@
+name: Build Veil Gecko Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/gecko-android-apk.yml"
+      - "mobile/android/**"
+      - "gecko/**"
+      - "scripts/gecko-bootstrap.sh"
+      - "scripts/gecko-build-android.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    name: Build and verify Veil 0.9.0 Gecko APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+
+      - name: Verify Android release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F "versionCode 90" mobile/android/app/build.gradle
+          grep -F "versionName '0.9.0'" mobile/android/app/build.gradle
+
+      - name: Reclaim runner disk space without removing Android tooling
+        shell: bash
+        run: |
+          sudo rm -rf /opt/ghc /usr/share/dotnet /opt/hostedtoolcache/CodeQL || true
+          df -h
+
+      - name: Bootstrap exact pinned Gecko revision
+        run: ./scripts/gecko-bootstrap.sh
+
+      - name: Build pinned GeckoView
+        shell: bash
+        run: |
+          set -o pipefail
+          ./scripts/gecko-build-android.sh 2>&1 | tee gecko-build-android.log
+
+      - name: Build Veil 0.9.0 APK against local GeckoView
+        working-directory: mobile/android
+        env:
+          VEIL_GECKO_SOURCE: ${{ github.workspace }}/.gecko-src
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Verify APK exists and is non-empty
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="mobile/android/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          ls -lh "$APK"
+          sha256sum "$APK" | tee mobile/android/app/build/outputs/apk/debug/app-debug.apk.sha256
+
+      - name: Upload Veil 0.9.0 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: veil-0.9.0-gecko-android-apk
+          path: |
+            mobile/android/app/build/outputs/apk/debug/app-debug.apk
+            mobile/android/app/build/outputs/apk/debug/app-debug.apk.sha256
+          if-no-files-found: error
