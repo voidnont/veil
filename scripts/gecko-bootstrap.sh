@@ -47,4 +47,8 @@ python3 "$REPO_ROOT/tools/gecko_branding.py" \
   --repo-root "$REPO_ROOT" \
   --source "$SOURCE_DIR"
 
-echo "Prepared Gecko $REVISION with Veil branding in $SOURCE_DIR"
+python3 "$REPO_ROOT/tools/gecko_prefs.py" \
+  --repo-root "$REPO_ROOT" \
+  --source "$SOURCE_DIR"
+
+echo "Prepared Gecko $REVISION with Veil branding and privacy defaults in $SOURCE_DIR"

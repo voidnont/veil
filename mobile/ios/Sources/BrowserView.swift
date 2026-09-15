@@ -13,11 +13,11 @@ final class BrowserModel: NSObject, ObservableObject, WKNavigationDelegate {
     let webView: WKWebView
 
     override init() {
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
+        let configuration = PrivacyConfiguration.makeWebViewConfiguration()
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
 
+        PrivacyConfiguration.apply(to: webView)
         webView.navigationDelegate = self
         webView.allowsBackForwardNavigationGestures = true
         load(Self.home)

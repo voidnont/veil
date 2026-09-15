@@ -13,6 +13,7 @@ $RevisionFile = Join-Path $RepoRoot "gecko\REVISION"
 $SeriesFile = Join-Path $RepoRoot "gecko\patches\series"
 $Verifier = Join-Path $RepoRoot "tools\gecko_manifest.py"
 $Branding = Join-Path $RepoRoot "tools\gecko_branding.py"
+$Preferences = Join-Path $RepoRoot "tools\gecko_prefs.py"
 
 $Python = Get-Command python.exe -ErrorAction SilentlyContinue
 if (-not $Python) {
@@ -85,4 +86,9 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-Write-Host "Prepared Gecko $Revision with Veil branding in $SourceDir"
+& $Python.Source $Preferences --repo-root $RepoRoot --source $SourceDir
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+Write-Host "Prepared Gecko $Revision with Veil branding and privacy defaults in $SourceDir"

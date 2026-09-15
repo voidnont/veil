@@ -10,7 +10,9 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 
+import org.mozilla.geckoview.ContentBlocking;
 import org.mozilla.geckoview.GeckoRuntime;
+import org.mozilla.geckoview.GeckoRuntimeSettings;
 import org.mozilla.geckoview.GeckoSession;
 import org.mozilla.geckoview.GeckoView;
 
@@ -25,7 +27,17 @@ public final class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        runtime = GeckoRuntime.create(this);
+        GeckoRuntimeSettings runtimeSettings = new GeckoRuntimeSettings.Builder()
+                .globalPrivacyControlEnabled(true)
+                .remoteDebuggingEnabled(false)
+                .consoleOutput(false)
+                .debugLogging(false)
+                .contentBlocking(new ContentBlocking.Settings.Builder()
+                        .safeBrowsing(ContentBlocking.SafeBrowsing.DEFAULT)
+                        .enhancedTrackingProtectionLevel(ContentBlocking.EtpLevel.DEFAULT)
+                        .build())
+                .build();
+        runtime = GeckoRuntime.create(this, runtimeSettings);
         session = new GeckoSession();
         session.open(runtime);
 
