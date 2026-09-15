@@ -145,7 +145,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -236,3 +236,50 @@ jobs:
             target/release/veil-browser*
             target/release/veil-engine*
           if-no-files-found: error
+
+  ios-build:
+    name: Build Veil for iOS Simulator
+    needs: promote
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: mobile/ios
+        run: xcodegen generate
+
+      - name: Build iOS Simulator app
+        working-directory: mobile/ios
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Veil.xcodeproj \
+            -scheme Veil \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee xcodebuild.log
+
+      - name: Upload iOS Simulator app
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veil-ios-simulator-app
+          path: mobile/ios/build/Build/Products/Debug-iphonesimulator/Veil.app
+          if-no-files-found: error
+
+      - name: Upload iOS build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: veil-ios-build-log
+          path: mobile/ios/xcodebuild.log
+          if-no-files-found: warn
