@@ -29,6 +29,7 @@ class GeckoReleaseWorkflowTests(unittest.TestCase):
 
         self.assertIn('gh release create "v${VERSION}"', workflow)
         self.assertIn("SHA256SUMS.txt", workflow)
+        self.assertIn("physical-device/App Store IPA", workflow)
         self.assertNotIn("0.8.9", workflow)
         self.assertNotIn("veil-windows-installer", workflow)
         self.assertNotIn("target/release/veil-browser", workflow)
